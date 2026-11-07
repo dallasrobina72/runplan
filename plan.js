@@ -3,6 +3,8 @@ import { addDays, weekday, mondayOf, daysBetween } from './dates.js';
 import { DIST, paces, predict } from './vdot.js';
 
 // Seconds per km for every zone used in steps.
+export const DEFAULT_PEAK_LONG = { '5k': 12, '10k': 15, half: 19, marathon: 32 };
+
 export function zonePaces(vdot, goal, goalTime) {
   const p = paces(vdot);
   const goalPace = goalTime ? goalTime / (DIST[goal] / 1000) : predict(vdot, DIST[goal]) / (DIST[goal] / 1000);
@@ -165,8 +167,9 @@ function phasesFor(n, taper) {
  * weekOffset: number added to week numbers (used when rebuilding part of a plan)
  */
 export function buildPlan(profile, startDate, weekOffset = 0) {
-  const g = GOALS[profile.goal];
-  const zp = zonePaces(profile.vdot, profile.goal, profile.goalTime);
+  // Your own target for the longest run overrides the default for the goal.
+  const g = { ...GOALS[profile.goal], ...(profile.peakLong ? { peakLong: profile.peakLong } : {}) };
+  const zp = zonePaces(profile.vdot, profile.goal, profile.paceFrom === 'fitness' ? null : profile.goalTime);
   const first = mondayOf(startDate);
   const raceMonday = mondayOf(profile.raceDate);
   const n = daysBetween(first, raceMonday) / 7 + 1;
@@ -179,7 +182,8 @@ export function buildPlan(profile, startDate, weekOffset = 0) {
   const other = profile.otherDays || [];
 
   const startKm = Math.max(10, profile.weeklyKm || 0);
-  const peakKm = Math.min(g.maxPeak, Math.max(g.minPeak, startKm * 1.6, startKm));
+  // The long run is at most half the week, so the peak week must be at least twice the longest run.
+  const peakKm = Math.max(g.peakLong * 2, Math.min(g.maxPeak, Math.max(g.minPeak, startKm * 1.6, startKm)));
   let level = startKm;
   let long = Math.max(5, Math.min(profile.longestKm || 6, g.peakLong));
 
@@ -191,7 +195,7 @@ export function buildPlan(profile, startDate, weekOffset = 0) {
   const longStep = Math.min(g.longStep, Math.max(0.5, (g.peakLong - long) / Math.max(1, nonTaper * 0.75)));
 
   const weeks = [];
-  let lastNormal = 0, lastLong = 0;
+  let lastNormal = 0, lastLong = 0, prevLong = 0;
   for (let i = 0; i < n; i++) {
     const phase = phases[i];
     const start = addDays(first, i * 7);
@@ -212,8 +216,10 @@ export function buildPlan(profile, startDate, weekOffset = 0) {
       km = level;
       longKm = round(long);
     }
-    // The long run is never more than half the week.
-    longKm = Math.min(longKm, Math.max(6, round(km * 0.5)));
+    // The long run is at most half the week (55% in the peak phase, so lower-mileage runners still reach their longest run).
+    longKm = Math.min(longKm, Math.max(6, round(km * (phase === 'peak' ? 0.55 : 0.5))));
+    // And never more than 2 km longer than the last long run.
+    if (prevLong) longKm = Math.min(longKm, prevLong + 2);
 
     // Which sessions this week.
     let hard = [];
@@ -284,6 +290,8 @@ export function buildPlan(profile, startDate, weekOffset = 0) {
       }
     }
     if (normal) { lastNormal = total(); lastLong = workouts.find((w) => w.type === 'long')?.km ?? lastLong; }
+
+    if (!recovery && phase !== 'taper') prevLong = Math.max(prevLong, workouts.find((w) => w.type === 'long')?.km || 0);
 
     // Starting mid-week: drop the runs on days already gone.
     if (i === 0) for (let k = workouts.length - 1; k >= 0; k--) if (workouts[k].date < startDate) workouts.splice(k, 1);

@@ -1,5 +1,5 @@
 // Offline support. After changing any app file, bump VERSION so phones pick up the update.
-const VERSION = 'runplan-v7';
+const VERSION = 'runplan-v8';
 const FILES = [
   './', 'index.html', 'styles.css', 'manifest.webmanifest',
   'app.js', 'plan.js', 'adapt.js', 'vdot.js', 'dates.js', 'store.js', 'sync.js', 'charts.js', 'training.js', 'analysis.js',

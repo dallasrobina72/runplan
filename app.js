@@ -1,5 +1,5 @@
 import { load, save, exportFile, importFile, reset } from './store.js';
-import { buildPlan, zonePaces, TYPES, HARD, stepsKm } from './plan.js';
+import { buildPlan, zonePaces, TYPES, HARD, stepsKm, DEFAULT_PEAK_LONG } from './plan.js';
 import { weekOf, weekStats, volumeCheck, rebuild, paceCheck, vdotFromResult } from './adapt.js';
 import { vdotFromRace, predict, DIST, fmtPace, fmtTime, parseTime } from './vdot.js';
 import { addDays, weekday, mondayOf, daysBetween, today, fmtDate, fmtShort, DAY } from './dates.js';
@@ -19,7 +19,9 @@ const GOAL_NAME = { '5k': '5K', '10k': '10K', half: 'Half marathon', marathon: '
 const ZONE_NAME = { easy: 'Easy', jog: 'Jog', threshold: 'Threshold', tenK: '10K pace', interval: 'Interval pace', fiveK: '5K pace', race5k: '5K effort', goal: 'Race pace', race: 'Race pace', hill: 'Hill effort' };
 const allWorkouts = () => S.plan.weeks.flatMap((w) => w.workouts);
 const findWorkout = (id) => allWorkouts().find((w) => w.id === id);
-const zp = () => zonePaces(S.profile.vdot, S.profile.goal, S.profile.goalTime);
+// Race-pace sessions use your goal time, unless you've chosen to follow your current fitness.
+const usesGoal = () => !!S.profile.goalTime && S.profile.paceFrom !== 'fitness';
+const zp = () => zonePaces(S.profile.vdot, S.profile.goal, usesGoal() ? S.profile.goalTime : null);
 
 // ---------- small UI helpers ----------
 function toast(msg) {
@@ -675,7 +677,8 @@ function renderSettings() {
     <section class="card"><h2>Paces</h2>
       <table class="table">
         <tr><td>Easy and long runs</td><td>${fmtPace(pz.easyFast)} to ${fmtPace(pz.easySlow)}</td></tr>
-        <tr><td>Race pace (${GOAL_NAME[p.goal]})</td><td>${fmtPace(pz.goal)}</td></tr>
+        <tr><td>${GOAL_NAME[p.goal]} pace from your fitness${usesGoal() ? '' : ' <span class="muted small">(used in sessions)</span>'}</td><td>${fmtPace(predict(p.vdot, DIST[p.goal]) / (DIST[p.goal] / 1000))}</td></tr>
+        ${p.goalTime ? `<tr><td>${GOAL_NAME[p.goal]} goal pace${usesGoal() ? ' <span class="muted small">(used in sessions)</span>' : ''}</td><td>${fmtPace(p.goalTime / (DIST[p.goal] / 1000))}</td></tr>` : ''}
         <tr><td>Threshold (tempo)</td><td>${fmtPace(pz.threshold)}</td></tr>
         <tr><td>10K pace</td><td>${fmtPace(pz.tenK)}</td></tr>
         <tr><td>5K pace</td><td>${fmtPace(pz.fiveK)}</td></tr>
@@ -694,7 +697,17 @@ function renderSettings() {
       <form id="sched" novalidate>
         <label class="field">Race date<input type="date" name="raceDate" value="${p.raceDate}"></label>
         <label class="field">Goal time (optional)<input name="goalTime" value="${p.goalTime ? fmtTime(p.goalTime) : ''}" placeholder="e.g. 1:45:00"></label>
-        <p class="hint">Predicted from your fitness: ${fmtTime(predict(p.vdot, DIST[p.goal]))}. Race pace sessions use your goal if you set one.</p>
+        <p class="hint">Predicted from your fitness: ${fmtTime(predict(p.vdot, DIST[p.goal]))}.</p>
+        ${p.goalTime ? `<fieldset><legend>Race pace sessions use</legend><div class="seg">
+          <label><input type="radio" name="paceFrom" value="goal" ${usesGoal() ? 'checked' : ''}><span>My goal time</span></label>
+          <label><input type="radio" name="paceFrom" value="fitness" ${usesGoal() ? '' : 'checked'}><span>My fitness</span></label></div>
+          <p class="hint">Goal: a fixed target. Fitness: moves faster or slower as your fitness score changes.</p></fieldset>` : ''}
+        ${(() => {
+          const target = p.peakLong || DEFAULT_PEAK_LONG[p.goal];
+          const planned = Math.max(0, ...S.plan.weeks.flatMap((w) => w.workouts).filter((w) => w.type === 'long').map((w) => w.km));
+          return `<label class="field">Longest run before race day (km)<input type="number" name="peakLong" min="5" max="40" step="0.5" inputmode="decimal" value="${target}"></label>
+          <p class="hint ${planned < target ? 'error' : ''}">Your plan's longest run is ${planned} km${planned < target ? `, short of ${target} km. The weekly build is capped to stay safe; once you're running more each week, tap Rebuild from my recent running and it can go further.` : '.'}</p>`;
+        })()}
         <fieldset><legend>Run days</legend>${dayChips('runDays', p.runDays)}</fieldset>
         <label class="field">Long run day<select name="longRunDay">${DAY.map((d, i) => `<option value="${i}" ${p.longRunDay === i ? 'selected' : ''}>${d}</option>`).join('')}</select></label>
         <p class="hint">Hard training days come from your weekly gym and training below.</p>
@@ -756,12 +769,15 @@ function renderSettings() {
     const runDays = checked(f, 'runDays');
     const longRunDay = Number(f.longRunDay.value);
     const goalTime = f.goalTime.value.trim() ? parseTime(f.goalTime.value) : null;
+    const peakLong = Number(f.peakLong.value);
+    if (!peakLong || peakLong < 5 || peakLong > 40) return err('Longest run should be between 5 and 40 km.');
     if (runDays.length < 2) return err('Pick at least 2 run days.');
     if (!runDays.includes(longRunDay)) return err('Long run day must be a run day.');
     if (f.goalTime.value.trim() && !goalTime) return err('Goal time should look like 1:45:00.');
     if (daysBetween(today(), f.raceDate.value) < 21) return err('Race date must be at least 3 weeks away.');
     const prev = copy(S.profile);
-    S.profile = { ...S.profile, raceDate: f.raceDate.value, goalTime, runDays, longRunDay, otherDays: hardDays(T()), timeTrials: f.timeTrials.checked };
+    S.profile = { ...S.profile, raceDate: f.raceDate.value, goalTime, runDays, longRunDay, otherDays: hardDays(T()), timeTrials: f.timeTrials.checked,
+      peakLong, paceFrom: f.paceFrom ? f.paceFrom.value : S.profile.paceFrom };
     doRebuild('Saved. Weeks from next Monday rebuilt.', prev);
   });
   $('#lib-add').addEventListener('submit', (e) => {
