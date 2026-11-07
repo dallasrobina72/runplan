@@ -4,8 +4,9 @@ import { weekOf, weekStats, volumeCheck, rebuild, paceCheck, vdotFromResult } fr
 import { vdotFromRace, predict, DIST, fmtPace, fmtTime, parseTime } from './vdot.js';
 import { addDays, weekday, mondayOf, daysBetween, today, fmtDate, fmtShort, DAY } from './dates.js';
 import { fetchRuns, applyRuns, syncWindow } from './sync.js';
-import { weeklyBars, line } from './charts.js';
-import { ensureTraining, sessionsOn, isHard, hardDays, addSession, removeSession, moveSession, applyHardDays } from './training.js';
+import { weeklyBars, line, dots } from './charts.js';
+import { ensureTraining, sessionsOn, isHard, hardDays, addSession, removeSession, moveSession, applyHardDays, clashFor, swapOption } from './training.js';
+import { runList, filterRuns, records, compare } from './analysis.js';
 
 let S = load();
 let tab = 'today';
@@ -15,7 +16,7 @@ const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const persist = () => { if (!save(S)) toast('Could not save. Is storage full?'); };
 const GOAL_NAME = { '5k': '5K', '10k': '10K', half: 'Half marathon', marathon: 'Marathon' };
-const ZONE_NAME = { easy: 'Easy', jog: 'Jog', threshold: 'Threshold', tenK: '10K pace', interval: 'Interval pace', fiveK: '5K pace', race5k: '5K effort', goal: 'Race pace', race: 'Race pace' };
+const ZONE_NAME = { easy: 'Easy', jog: 'Jog', threshold: 'Threshold', tenK: '10K pace', interval: 'Interval pace', fiveK: '5K pace', race5k: '5K effort', goal: 'Race pace', race: 'Race pace', hill: 'Hill effort' };
 const allWorkouts = () => S.plan.weeks.flatMap((w) => w.workouts);
 const findWorkout = (id) => allWorkouts().find((w) => w.id === id);
 const zp = () => zonePaces(S.profile.vdot, S.profile.goal, S.profile.goalTime);
@@ -49,6 +50,7 @@ const checked = (form, name) => $$(`input[name="${name}"]:checked`, form).map((x
 function paceText(zone) {
   const p = zp();
   if (zone === 'easy') return `${fmtPace(p.easyFast)} to ${fmtPace(p.easySlow)} /km`;
+  if (zone === 'hill') return 'hard effort (ignore pace on hills)';
   return `${fmtPace(p[zone])} /km`;
 }
 const amount = (s) => (s.km != null ? `${+s.km.toFixed(2)} km` : `${s.min} min`);
@@ -57,7 +59,8 @@ function stepHtml(s) {
   if (s.kind === 'note') return `<li class="note">${esc(s.text)}</li>`;
   if (s.kind === 'reps') {
     return `<li><b>${s.n} x ${amount(s.work)}</b> at ${paceText(s.work.zone)} <span class="muted">(${ZONE_NAME[s.work.zone]})</span>
-      <div class="muted">${amount(s.rest)} easy jog between</div></li>`;
+      ${s.work.label ? `<div class="muted">${esc(s.work.label)}</div>` : ''}
+      <div class="muted">${amount(s.rest)}: ${s.rest.label ? esc(s.rest.label.toLowerCase()) : 'easy jog between'}</div></li>`;
   }
   const label = { warm: 'Warm up', cool: 'Cool down' }[s.kind];
   return `<li>${label ? `<b>${label}</b> ` : ''}<b>${amount(s)}</b> at ${paceText(s.zone)} <span class="muted">(${ZONE_NAME[s.zone]})</span>${s.label ? `<div class="muted">${esc(s.label)}</div>` : ''}</li>`;
@@ -111,6 +114,13 @@ function renderSetup(prefill) {
           `<label><input type="radio" name="goal" value="${k}" ${p.goal === k ? 'checked' : ''}><span>${v}</span></label>`).join('')}</div>
       </fieldset>
       <label class="field">Race date<input type="date" name="raceDate" value="${esc(p.raceDate)}" required></label>
+      <fieldset><legend>Start the plan</legend>
+        <div class="seg">
+          <label><input type="radio" name="startWhen" value="today" checked><span>Today</span></label>
+          <label><input type="radio" name="startWhen" value="monday"><span>Next Monday</span></label>
+        </div>
+        <p class="hint">Starting mid-week gives you the rest of this week's runs only.</p>
+      </fieldset>
       <fieldset><legend>A recent race or hard effort</legend>
         <p class="hint">A parkrun counts. A best guess is fine: your first time trial will correct it.</p>
         <div class="row">
@@ -168,7 +178,7 @@ function renderSetup(prefill) {
       raceDist: form.raceDist.value, raceTime: form.raceTime.value,
     };
     const t = today();
-    const start = weekday(t) <= 2 ? mondayOf(t) : addDays(mondayOf(t), 7);
+    const start = form.startWhen.value === 'today' || weekday(t) === 0 ? t : addDays(mondayOf(t), 7);
     try {
       const plan = buildPlan(profile, start);
       const archived = S.plan ? allWorkouts().filter((w) => S.logs[w.id]?.status === 'done')
@@ -199,6 +209,8 @@ function banners() {
     const msg = pc.change > 0 ? 'Your last 3 hard sessions felt easy. Make paces a little faster?' : 'Your last hard sessions felt very hard. Ease paces off a little?';
     out.push(`<div class="banner"><p>${msg}</p><div class="row"><button class="btn primary" data-act="pace" data-change="${pc.change}" data-last="${pc.lastId}">Yes, adjust</button><button class="btn ghost" data-act="dismiss-pace" data-last="${pc.lastId}">No</button></div></div>`);
   }
+  const nc = nextClash();
+  if (nc) out.push(clashNote(nc));
   const hasData = Object.keys(S.logs).length > 0;
   if (hasData && (!S.lastBackup || daysBetween(S.lastBackup, t) > 14)) {
     out.push(`<div class="banner quiet"><p>Your runs are only saved on this phone. Save a backup file now and then.</p><div class="row"><button class="btn" data-act="backup">Save backup</button></div></div>`);
@@ -258,7 +270,7 @@ function weekStrip(wk) {
     const log = w && S.logs[w.id];
     const cls = w ? `has ${log?.status || ''}` : '';
     const gym = sessionsOn(T(), date).length;
-    const target = w ? `data-open="${w.id}"` : gym ? `data-day="${date}"` : 'disabled';
+    const target = w ? `data-open="${w.id}"` : `data-day="${date}"`;
     return `<button class="strip-day ${cls} ${date === today() ? 'today' : ''}" ${target} style="${w ? `--type: var(--c-${TYPES[w.type].color})` : ''}">
       <span class="small">${d}</span><span class="dot"></span><span class="small">${w ? w.km : ''}</span><span class="gymbar ${gym ? 'on' : ''}"></span></button>`;
   }).join('')}</div>`;
@@ -284,9 +296,10 @@ function renderPlan() {
           const date = addDays(wk.start, i);
           const w = wk.workouts.find((x) => x.date === date);
           const gym = sessionsOn(T(), date);
-          const gymText = gym.length ? `<span class="gymline">${gym.map(esc).join(' · ')}</span>` : '';
-          if (!w) return `<button class="day ${gym.length ? '' : 'rest'}" data-day="${date}"><span class="d">${d}</span>
-            <span class="grow">${gym.length ? gymText : '<span class="muted">Rest</span>'}</span></button>`;
+          const extra = S.extras.filter((x) => x.date === date).map((x) => `Extra run ${x.km} km &#10003;`);
+          const gymText = gym.length || extra.length ? `<span class="gymline">${[...gym.map(esc), ...extra].join(' · ')}</span>` : '';
+          if (!w) return `<button class="day ${gymText ? '' : 'rest'}" data-day="${date}"><span class="d">${d}</span>
+            <span class="grow">${gymText || '<span class="muted">Rest</span>'}</span></button>`;
           return `<button class="day" data-open="${w.id}" style="--type: var(--c-${TYPES[w.type].color})"><span class="d">${d}</span><span class="pill"></span>
             <span class="grow">${esc(TYPES[w.type].name)}${gymText}</span><span class="muted">${w.km} km</span>${statusIcon(w)}</button>`;
         }).join('')}
@@ -340,9 +353,21 @@ function gymCard(date, name) {
 }
 
 function clashNote(w) {
-  const hard = sessionsOn(T(), w.date).filter((n) => isHard(T(), n));
-  if (!hard.length || !(HARD.has(w.type) || w.type === 'long')) return '';
-  return `<p class="banner quiet small">Same day as ${hard.map(esc).join(' and ')}. Run first, or move one of them.</p>`;
+  const c = clashFor(T(), w, HARD);
+  if (!c || S.logs[w.id]) return '';
+  const wk = weekOf(S.plan, w.date);
+  const swap = swapOption(T(), w, wk, HARD, today());
+  const when = c.when === 'same' ? `the same day as ${esc(c.name)}` : `the day after ${esc(c.name)}`;
+  return `<div class="banner small"><p><b>${esc(TYPES[w.type].name)}</b> on ${fmtDate(w.date)} is ${when}.</p>
+    ${swap ? `<div class="row"><button class="btn primary" data-act="swap" data-id="${w.id}" data-with="${swap.id}">Swap with ${DAY[weekday(swap.date)]} easy run</button></div>`
+      : '<p class="muted">No easy run this week to swap with. Run it first, or move it with Move to.</p>'}</div>`;
+}
+
+// Next upcoming clash in the coming week, for the Today screen.
+function nextClash() {
+  const t = today(), end = addDays(t, 7);
+  return allWorkouts().filter((w) => w.date >= t && w.date <= end && !S.logs[w.id]).sort((a, b) => a.date.localeCompare(b.date))
+    .find((w) => clashFor(T(), w, HARD));
 }
 
 function dayTraining(date) {
@@ -359,7 +384,8 @@ function dayTraining(date) {
         <button class="link" data-act="gym-remove" data-date="${date}" data-name="${esc(n)}">Remove</button></div>`;
     }).join('') || '<p class="muted small">Nothing planned.</p>'}
     <select class="add-session" data-act="gym-add" data-date="${date}" aria-label="Add a session"><option value="">+ Add a session to this day</option>${T().library.map((x) => `<option value="${esc(x.name)}">${esc(x.name)}</option>`).join('')}</select>
-    <p class="muted small">Changes here are for this date only. Set your usual week in Settings.</p></section>`;
+    <p class="muted small">Changes here are for this date only. Set your usual week in Settings.</p></section>
+    ${(() => { const nx = allWorkouts().find((x) => x.date === addDays(date, 1)); return nx && clashFor(T(), nx, HARD)?.when === 'after' ? clashNote(nx) : ''; })()}`;
 }
 
 function openDay(date) {
@@ -409,6 +435,10 @@ function openLog(id, extra = false) {
         <label class="field">Time<input name="time" placeholder="mm:ss or h:mm:ss" value="${log.sec ? fmtTime(log.sec) : ''}"></label>
       </div>
       ${result ? `<label class="field">${w.type === 'trial' ? '5K time' : 'Race time'} (updates your paces)<input name="result" placeholder="${w.type === 'trial' ? 'e.g. 22:30' : 'e.g. 1:45:00'}" value="${log.resultSec ? fmtTime(log.resultSec) : ''}"></label>` : ''}
+      <div class="row">
+        <label class="field">Avg heart rate (optional)<input type="number" name="hr" min="60" max="230" inputmode="numeric" value="${log.hr ? Math.round(log.hr) : ''}" placeholder="bpm"></label>
+        <label class="toggle tm"><input type="checkbox" name="treadmill" ${log.treadmill ? 'checked' : ''}> Treadmill</label>
+      </div>
       <label class="field">How hard did it feel? <output id="rpe-out">${log.rpe ?? 5}</output>/10
         <input type="range" min="1" max="10" name="rpe" value="${log.rpe ?? 5}"></label>
       <p class="hint">1 to 3 easy chat · 5 to 6 comfortably hard · 8 to 9 very hard · 10 all out</p>
@@ -424,7 +454,9 @@ function openLog(id, extra = false) {
       const sec = f.time.value.trim() ? parseTime(f.time.value) : null;
       if (!km || km <= 0 || km > 100) return ($('#log-error', root).textContent = 'Add the distance in km.');
       if (f.time.value.trim() && !sec) return ($('#log-error', root).textContent = 'Time should look like 32:10 or 1:05:00.');
-      const entry = { km, sec, rpe: Number(f.rpe.value), note: f.note.value.trim() };
+      const hr = f.hr.value ? Number(f.hr.value) : null;
+      if (hr && (hr < 60 || hr > 230)) return ($('#log-error', root).textContent = 'Heart rate should be between 60 and 230.');
+      const entry = { km, sec, rpe: Number(f.rpe.value), note: f.note.value.trim(), hr, treadmill: f.treadmill.checked };
       if (extra) {
         S.extras.push({ id: 'm' + Date.now(), date: f.date.value || today(), source: 'manual', ...entry });
       } else {
@@ -468,60 +500,86 @@ function doRebuild(msg = 'Plan rebuilt from next Monday') {
 }
 
 // ---------- progress ----------
+let pf = { where: 'all', kind: 'all' }; // Progress filters
+
 function renderProgress() {
   const t = today();
   const weeks = S.plan.weeks.filter((w) => w.start <= t);
   const rows = weeks.map((w) => ({ label: String(w.n), planned: w.km, done: weekStats(w, S.logs, S.extras).done, current: w === weekOf(S.plan, t) }));
-  const runs = [
-    ...allWorkouts().filter((w) => S.logs[w.id]?.status === 'done').map((w) => ({ date: w.date, type: w.type, ...S.logs[w.id] })),
-    ...S.extras.map((e) => ({ type: 'extra', ...e })),
-  ].sort((a, b) => a.date.localeCompare(b.date));
-  const totalKm = Math.round(runs.reduce((s, r) => s + (r.km || 0), 0) * 10) / 10;
-
-  // Average easy pace per week (easy, strides, long, extras with a time).
-  const easyByWeek = {};
-  for (const r of runs) if (r.sec && r.km && ['easy', 'strides', 'long', 'extra', 'shakeout'].includes(r.type)) {
-    const k = mondayOf(r.date);
-    (easyByWeek[k] ||= { km: 0, sec: 0 });
-    easyByWeek[k].km += r.km; easyByWeek[k].sec += r.sec;
-  }
-  const pacePts = Object.entries(easyByWeek).sort().map(([k, v]) => ({ label: fmtShort(k), y: v.sec / v.km }));
-  const vdotPts = S.vdotHistory.map((h) => ({ label: fmtShort(h.date), y: h.vdot }));
-
-  // Best time over a distance: time trial / race results, or any run of about that length (scaled to the exact distance).
-  const best = (km, minKm, maxKm) => {
-    const c = runs.flatMap((r) => {
-      if (r.resultSec && r.type === 'trial') return km === 5 ? [r.resultSec] : [];
-      if (r.resultSec && r.type === 'race') return r.km >= minKm && r.km <= maxKm ? [r.resultSec] : [];
-      if (r.sec && r.km >= minKm && r.km <= maxKm) return [(r.sec * km) / r.km];
-      return [];
-    });
-    return c.length ? fmtTime(Math.min(...c)) : '-';
+  const all = runList(S.plan, S.logs, S.extras);
+  const totalKm = Math.round(all.reduce((sum, r) => sum + (r.km || 0), 0) * 10) / 10;
+  const rec = records(all);
+  const runs = filterRuns(all, pf);
+  const timed = runs.filter((r) => r.sec && r.km);
+  const cls = (r) => (HARD.has(r.type) ? 'hard' : '');
+  const pacePts = timed.map((r) => ({ label: fmtShort(r.date), y: r.sec / r.km, cls: cls(r) }));
+  const hrPts = timed.filter((r) => r.hr).map((r) => ({ label: fmtShort(r.date), y: r.hr, cls: cls(r) }));
+  const cmp = compare(runs, t);
+  const seg = (key, opts) => `<div class="seg mini">${opts.map(([v, label]) =>
+    `<button class="${pf[key] === v ? 'on' : ''}" data-act="pf" data-key="${key}" data-val="${v}" aria-pressed="${pf[key] === v}">${label}</button>`).join('')}</div>`;
+  const change = (a, b, fmt, unit) => {
+    if (a == null || b == null) return a == null ? '-' : `${fmt(a)}${unit}`;
+    const better = a < b;
+    return `${fmt(b)} &rarr; <b>${fmt(a)}</b>${unit} <span class="${better ? 'good' : 'muted'}">${Math.abs(a - b) < 0.5 ? 'same' : better ? 'better' : 'higher'}</span>`;
   };
+  const prRow = (name, r) => `<tr><td>${name}</td><td>${r ? fmtTime(r.sec) : '-'}</td><td class="muted small">${r ? `${fmtShort(r.date)}${r.est ? ' · from a longer run' : ''}` : ''}</td></tr>`;
+  const recent = all.slice().reverse().slice(0, 12);
 
   $('#view').innerHTML = `
     <section><h1>Progress</h1>
       <div class="tiles">
         <div class="tile"><span class="big">${totalKm}</span><span class="muted small">km logged</span></div>
-        <div class="tile"><span class="big">${runs.length}</span><span class="muted small">runs</span></div>
+        <div class="tile"><span class="big">${all.length}</span><span class="muted small">runs</span></div>
         <div class="tile"><span class="big">${S.profile.vdot}</span><span class="muted small">fitness (VDOT)</span></div>
       </div>
     </section>
+
+    <section><h2>Personal records</h2>
+      <table class="table">
+        ${prRow('5K', rec.fiveK)}${prRow('10K', rec.tenK)}${prRow('Half marathon', rec.half)}${prRow('Marathon', rec.marathon)}
+        <tr><td>Longest run</td><td>${rec.longest ? `${rec.longest.km} km` : '-'}</td><td class="muted small">${rec.longest ? fmtShort(rec.longest.date) : ''}</td></tr>
+        <tr><td>Fastest avg pace (3 km+)</td><td>${rec.fastest ? `${fmtPace(rec.fastest.pace)} /km` : '-'}</td><td class="muted small">${rec.fastest ? `${fmtShort(rec.fastest.date)} · ${rec.fastest.km} km` : ''}</td></tr>
+      </table>
+    </section>
+
+    <section><h2>Predicted race times</h2>
+      <table class="table">
+        ${[['5K', 5000], ['10K', 10000], ['Half marathon', 21097.5], ['Marathon', 42195]].map(([n, m]) =>
+          `<tr><td>${n}</td><td>${fmtTime(predict(S.profile.vdot, m))}</td><td class="muted small">${fmtPace(predict(S.profile.vdot, m) / (m / 1000))} /km</td></tr>`).join('')}
+      </table>
+      <p class="muted small">From your fitness score (VDOT ${S.profile.vdot}). Updates after each time trial or race.</p>
+      ${line(S.vdotHistory.map((h) => ({ label: fmtShort(h.date), y: h.vdot })), { label: 'VDOT over time' })}
+    </section>
+
+    <section><h2>Run analysis</h2>
+      ${seg('where', [['all', 'All'], ['outdoor', 'Outdoor'], ['treadmill', 'Treadmill']])}
+      ${seg('kind', [['all', 'All runs'], ['easy', 'Easy and long only']])}
+      <p class="muted small">${runs.length} run${runs.length === 1 ? '' : 's'}. Easy and long only is the fairest comparison, since hard sessions skew pace and heart rate.</p>
+      <h3>Average pace per run</h3>
+      ${dots(pacePts, { fmt: fmtPace, lowerIsBetter: true, label: 'Average pace per run' }) || '<p class="muted small">Needs 2 runs with a time.</p>'}
+      <h3>Average heart rate per run</h3>
+      ${dots(hrPts, { fmt: (v) => String(Math.round(v)), label: 'Average heart rate per run' }) || '<p class="muted small">Needs 2 runs with heart rate. Synced Garmin runs include it, or add it when you log.</p>'}
+      <p class="legend small"><span class="key done"></span>Easy, long and extra <span class="key hard"></span>Hard sessions · line shows the trend. Faster is higher on the pace chart.</p>
+      <h3>Last 4 weeks vs the 4 before</h3>
+      <table class="table">
+        <tr><td>Avg pace</td><td>${change(cmp.recent.pace, cmp.before.pace, fmtPace, ' /km')}</td></tr>
+        <tr><td>Avg heart rate</td><td>${change(cmp.recent.hr, cmp.before.hr, (v) => Math.round(v), ' bpm')}</td></tr>
+        <tr><td>Heartbeats per km</td><td>${change(cmp.recent.beats, cmp.before.beats, (v) => Math.round(v), '')}</td></tr>
+      </table>
+      <p class="muted small">Heartbeats per km joins pace and heart rate: fewer beats to cover a km means you're getting fitter.</p>
+    </section>
+
     <section><h2>Weekly km</h2>
       ${rows.length ? weeklyBars(rows) + '<p class="legend small"><span class="key planned"></span>Planned <span class="key done"></span>Done</p>' : '<p class="muted">Shows once your plan starts.</p>'}
     </section>
-    <section><h2>Easy run pace</h2>
-      ${line(pacePts, { fmt: fmtPace, lowerIsBetter: true, label: 'Average easy pace per week' }) || '<p class="muted">Log 2 weeks of easy runs with times to see a trend. Higher on the chart is faster.</p>'}
-    </section>
-    <section><h2>Fitness</h2>
-      ${line(vdotPts, { label: 'VDOT over time' }) || '<p class="muted">Updates after each time trial or race.</p>'}
-      <table class="table"><tr><th>Predicted</th><th>Now</th><th>Best logged</th></tr>
-        ${[['5K', 5000, 4.95, 5.3], ['10K', 10000, 9.9, 10.6], ['Half', 21097.5, 21, 21.6], ['Marathon', 42195, 42, 43]].map(([n, m, lo, hi]) =>
-          `<tr><td>${n}</td><td>${fmtTime(predict(S.profile.vdot, m))}</td><td>${best(m / 1000, lo, hi)}</td></tr>`).join('')}
-      </table>
-    </section>
-    ${S.extras.length ? `<section><h2>Extra runs</h2>${S.extras.slice().reverse().slice(0, 10).map((e) =>
-      `<div class="card row-between"><span>${fmtDate(e.date)} · ${e.km} km${e.sec ? ` · ${fmtPace(e.sec / e.km)} /km` : ''}</span><button class="link" data-act="del-extra" data-id="${e.id}" aria-label="Delete run">Delete</button></div>`).join('')}</section>` : ''}`;
+
+    ${recent.length ? `<section><h2>Recent runs</h2>${recent.map((r) => {
+      const isExtra = r.type === 'extra';
+      return `<div class="card runrow"><div class="row-between"><span><b>${fmtDate(r.date)}</b> · ${esc(isExtra ? (r.name || 'Extra run') : TYPES[r.type]?.name || r.type)}</span>
+        <button class="link" data-act="tread" data-src="${isExtra ? 'extra' : 'plan'}" data-id="${r.id}">${r.treadmill ? 'Treadmill' : 'Outdoor'}</button></div>
+        <span class="muted small">${r.km} km${r.sec ? ` · ${fmtTime(r.sec)} · ${fmtPace(r.sec / r.km)} /km` : ''}${r.hr ? ` · ${Math.round(r.hr)} bpm` : ''}</span>
+        ${isExtra ? `<button class="link small" data-act="del-extra" data-id="${r.id}">Delete</button>` : ''}</div>`;
+    }).join('')}<p class="muted small">Tap Outdoor or Treadmill to switch how a run is counted.</p></section>` : ''}`;
 }
 
 // ---------- settings ----------
@@ -580,7 +638,7 @@ function renderSettings() {
         </div>
         <button class="btn primary wide" type="submit">Save and sync</button>
       </form>
-      <p class="muted small" id="sync-status">${S.sync.lastSync ? `Last sync ${fmtDate(S.sync.lastSync)}` : 'Not connected'}</p>
+      <p class="small ${S.sync.lastError ? 'error' : 'muted'}" id="sync-status">${esc(S.sync.lastError || S.sync.lastResult || (S.sync.apiKey ? 'Not synced yet' : 'Not connected'))}</p>
       ${S.sync.apiKey ? '<button class="btn ghost wide" data-act="disconnect">Disconnect</button>' : ''}
     </section>
 
@@ -651,11 +709,15 @@ async function runSync(loud) {
     const runs = await fetchRuns(S.sync, from, to);
     const r = applyRuns(S, runs);
     S.sync.lastSync = today();
+    S.sync.lastError = '';
+    S.sync.lastResult = `Last sync ${fmtDate(today())}: found ${runs.length} run${runs.length === 1 ? '' : 's'} from ${fmtShort(from)}, ${r.matched} ticked off the plan, ${r.extra} added as extra runs.`;
     persist();
     render();
     if (loud || r.matched || r.extra) toast(`Synced: ${r.matched} planned run${r.matched === 1 ? '' : 's'}, ${r.extra} extra`);
   } catch (ex) {
-    if (status) status.textContent = ex.message === 'Failed to fetch' ? 'Could not reach intervals.icu. Check your connection.' : ex.message;
+    S.sync.lastError = `Sync failed ${fmtDate(today())}: ${ex.message === 'Failed to fetch' || ex.message === 'Load failed' ? 'could not reach intervals.icu (no connection, or the browser blocked the request).' : ex.message}`;
+    persist();
+    if (status) { status.textContent = S.sync.lastError; status.className = 'small error'; }
     if (loud) toast('Sync failed');
   } finally { syncing = false; }
 }
@@ -719,8 +781,20 @@ document.addEventListener('click', (e) => {
       T().week = T().week.map((d) => d.filter((x) => x !== n));
       return afterTemplateChange();
     }
+    case 'swap': {
+      const other = findWorkout(a.dataset.with);
+      [w.date, other.date] = [other.date, w.date];
+      weekOf(S.plan, w.date).workouts.sort((x, y) => x.date.localeCompare(y.date));
+      persist(); closeSheet(); render(); return toast('Runs swapped');
+    }
+    case 'pf': pf[a.dataset.key] = a.dataset.val; return render();
+    case 'tread': {
+      const r = a.dataset.src === 'extra' ? S.extras.find((x) => x.id === id) : S.logs[id];
+      r.treadmill = !r.treadmill;
+      break;
+    }
     case 'del-extra': S.extras = S.extras.filter((x) => x.id !== id); break;
-    case 'new-plan': closeSheet(); return renderSetup({ ...S.profile, raceDate: '', goalTime: S.profile.goalTime ? fmtTime(S.profile.goalTime) : '', raceTime: S.profile.raceTime || '' });
+    case 'new-plan': closeSheet(); return renderSetup({ ...S.profile, goalTime: S.profile.goalTime ? fmtTime(S.profile.goalTime) : '', raceTime: S.profile.raceTime || '' });
     case 'reset':
       if (!confirm('Delete your plan and every logged run on this phone? This cannot be undone.')) return;
       reset(); S = load(); closeSheet(); return render();

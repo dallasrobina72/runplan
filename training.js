@@ -1,5 +1,5 @@
 // Gym and other training: a weekly template of session names, plus one-off changes for single dates.
-import { weekday } from './dates.js';
+import { weekday, addDays, daysBetween } from './dates.js';
 
 // "hard" = hard on the legs. Hard runs are kept off these days and the day after.
 export const DEFAULT_LIBRARY = [
@@ -55,4 +55,24 @@ export function applyHardDays(T, ticked) {
     }
     if (!ticked.includes(d) && has) T.week[d] = T.week[d].filter((n) => !isHard(T, n));
   }
+}
+
+// A hard run on a hard-on-legs day or the day after one (long run: same day only).
+export function clashFor(T, w, HARD) {
+  if (w.type === 'race') return null;
+  const same = sessionsOn(T, w.date).find((n) => isHard(T, n));
+  if (same && (HARD.has(w.type) || w.type === 'long')) return { name: same, when: 'same' };
+  const before = sessionsOn(T, addDays(w.date, -1)).find((n) => isHard(T, n));
+  if (before && HARD.has(w.type)) return { name: before, when: 'after' };
+  return null;
+}
+
+// An easy run this week to swap with, so the hard run lands somewhere safe.
+export function swapOption(T, w, week, HARD, today) {
+  const hardDates = week.workouts.filter((x) => x !== w && HARD.has(x.type)).map((x) => x.date);
+  return week.workouts.find((x) => {
+    if (!['easy', 'strides'].includes(x.type) || x.date < today) return false;
+    if (clashFor(T, { ...w, date: x.date }, HARD)) return false;
+    return hardDates.every((d) => Math.abs(daysBetween(d, x.date)) > 1);
+  }) || null;
 }

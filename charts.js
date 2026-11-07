@@ -49,3 +49,29 @@ export function line(points, { fmt = (v) => v.toFixed(1), lowerIsBetter = false,
   const dots = points.map((p, i) => `<circle cx="${x(i)}" cy="${y(p.y)}" r="3" class="dot"><title>${esc(p.label)}: ${esc(fmt(p.y))}</title></circle>`).join('');
   return `<svg viewBox="0 0 ${W} ${H}" class="chart" role="img" aria-label="${esc(label)}">${ticks}<path d="${path}" class="line"/>${dots}${labels}</svg>`;
 }
+
+// One dot per run plus a straight trend line. points: [{ label, y, cls }].
+export function dots(points, { fmt = (v) => v.toFixed(0), lowerIsBetter = false, label = 'Per run' } = {}) {
+  if (points.length < 2) return '';
+  const ys = points.map((p) => p.y);
+  let lo = Math.min(...ys), hi = Math.max(...ys);
+  const pad = (hi - lo) * 0.15 || Math.abs(hi) * 0.05 || 1;
+  lo -= pad; hi += pad;
+  const n = points.length;
+  const x = (i) => L + 6 + ((W - L - R - 12) * i) / (n - 1);
+  const y = (v) => { const f = (v - lo) / (hi - lo); return T + (H - T - B) * (lowerIsBetter ? f : 1 - f); };
+  // Least-squares trend line.
+  const mx = (n - 1) / 2, my = ys.reduce((s, v) => s + v, 0) / n;
+  let num = 0, den = 0;
+  ys.forEach((v, i) => { num += (i - mx) * (v - my); den += (i - mx) ** 2; });
+  const slope = den ? num / den : 0;
+  const trend = `<line x1="${x(0)}" y1="${y(my - slope * mx)}" x2="${x(n - 1)}" y2="${y(my + slope * (n - 1 - mx))}" class="trend"/>`;
+  const ticks = [0, 0.5, 1].map((f) => {
+    const v = lo + (hi - lo) * f, yy = y(v);
+    return `<line x1="${L}" x2="${W - R}" y1="${yy}" y2="${yy}" class="grid"/><text x="${L - 6}" y="${yy + 4}" text-anchor="end" class="tick">${esc(fmt(v))}</text>`;
+  }).join('');
+  const marks = points.map((p, i) => `<circle cx="${x(i)}" cy="${y(p.y)}" r="4" class="pt ${p.cls || ''}"><title>${esc(p.label)}: ${esc(fmt(p.y))}</title></circle>`).join('');
+  const labels = `<text x="${x(0)}" y="${H - 8}" text-anchor="start" class="tick">${esc(points[0].label)}</text>
+    <text x="${x(n - 1)}" y="${H - 8}" text-anchor="end" class="tick">${esc(points[n - 1].label)}</text>`;
+  return `<svg viewBox="0 0 ${W} ${H}" class="chart" role="img" aria-label="${esc(label)}">${ticks}${trend}${marks}${labels}</svg>`;
+}

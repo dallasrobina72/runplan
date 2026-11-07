@@ -18,6 +18,7 @@ export async function fetchRuns({ athleteId, apiKey }, oldest, newest) {
       km: Math.round(a.distance / 100) / 10,
       sec: a.moving_time || a.elapsed_time || 0,
       hr: a.average_heartrate || null,
+      treadmill: a.type === 'VirtualRun' || a.type === 'TreadmillRun' || a.trainer === true || /treadmill/i.test(a.name || ''),
       name: a.name || 'Run',
     }));
 }
@@ -33,10 +34,10 @@ export function applyRuns(state, runs) {
     imported.add(r.extId);
     const target = (byDate[r.date] || []).find((w) => !state.logs[w.id] || state.logs[w.id].status === 'skipped');
     if (target) {
-      state.logs[target.id] = { status: 'done', km: r.km, sec: r.sec, hr: r.hr, source: 'intervals', extId: r.extId };
+      state.logs[target.id] = { status: 'done', km: r.km, sec: r.sec, hr: r.hr, treadmill: r.treadmill, source: 'intervals', extId: r.extId };
       matched++;
     } else {
-      state.extras.push({ id: 'x' + r.extId, date: r.date, km: r.km, sec: r.sec, hr: r.hr, name: r.name, source: 'intervals' });
+      state.extras.push({ id: 'x' + r.extId, date: r.date, km: r.km, sec: r.sec, hr: r.hr, treadmill: r.treadmill, name: r.name, source: 'intervals' });
       extra++;
     }
   }

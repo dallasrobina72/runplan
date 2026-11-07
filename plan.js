@@ -9,6 +9,7 @@ export function zonePaces(vdot, goal, goalTime) {
   return {
     ...p, easy: (p.easySlow + p.easyFast) / 2, jog: p.easySlow + 20,
     race5k: p.fiveK, goal: goalPace, race: goalPace,
+    hill: p.interval * 1.2, // uphill is slower: only used to estimate distance, you run hills by effort
   };
 }
 
@@ -25,6 +26,7 @@ export const TYPES = {
   strides:   { name: 'Easy + strides',  color: 'easy' },
   long:      { name: 'Long run',        color: 'long' },
   fartlek:   { name: 'Fartlek',         color: 'tempo' },
+  hills:     { name: 'Hill reps',       color: 'hills' },
   tempo:     { name: 'Tempo',           color: 'tempo' },
   intervals: { name: 'Intervals',       color: 'intervals' },
   pace:      { name: 'Race pace',       color: 'pace' },
@@ -32,7 +34,7 @@ export const TYPES = {
   shakeout:  { name: 'Shakeout',        color: 'easy' },
   race:      { name: 'Race day',        color: 'race' },
 };
-export const HARD = new Set(['fartlek', 'tempo', 'intervals', 'pace', 'trial', 'race']);
+export const HARD = new Set(['fartlek', 'hills', 'tempo', 'intervals', 'pace', 'trial', 'race']);
 
 const round = (x, step = 0.5) => Math.round(x / step) * step;
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -56,6 +58,13 @@ function quality(kind, goal, phase, t) {
   if (kind === 'fartlek') {
     const n = Math.round(lerp(6, 10, t));
     return { type: 'fartlek', steps: [warm(), reps(n, { min: 1, zone: 'tenK' }, { min: 1, zone: 'jog' }), cool()] };
+  }
+  if (kind === 'hills') {
+    // Base: short, punchy 60 s reps. Build: longer 90 s reps.
+    const long = phase !== 'base';
+    const n = Math.round(lerp(long ? 6 : 6, long ? 8 : 10, t));
+    return { type: 'hills', steps: [warm(), reps(n, { min: long ? 1.5 : 1, zone: 'hill', label: 'Strong uphill, about 5K effort. Run tall, short quick steps' }, { min: long ? 2.5 : 2, zone: 'jog', label: 'Jog back down to the start' }), cool(),
+      { kind: 'note', text: 'No hill nearby? Treadmill at 6 to 8% incline.' }] };
   }
   if (kind === 'intervals') {
     if (goal === '5k') {
@@ -189,6 +198,7 @@ export function buildPlan(profile, startDate, weekOffset = 0) {
     const t = phaseLen(phase) > 1 ? phaseIdx(i) / (phaseLen(phase) - 1) : 1;
     const isRaceWeek = i === n - 1;
     const recovery = phase !== 'taper' && i % 4 === 3 && i < nonTaper - 1;
+    const partWeek = i === 0 && weekday(startDate) > 0 && !isRaceWeek; // plan starts mid-week
 
     let km, longKm;
     if (phase === 'taper') {
@@ -209,8 +219,11 @@ export function buildPlan(profile, startDate, weekOffset = 0) {
     let hard = [];
     if (isRaceWeek) hard = [];
     else if (recovery) hard = [profile.timeTrials !== false && daysBetween(start, profile.raceDate) > 13 ? 'trial' : 'fartlek'];
-    else if (phase === 'base') hard = runDays.length >= 4 && t > 0.5 ? ['fartlek', 'tempo'] : ['fartlek'];
-    else if (phase === 'build') hard = runDays.length >= 4 ? ['intervals', 'tempo'] : [i % 2 ? 'tempo' : 'intervals'];
+    else if (phase === 'base') hard = runDays.length >= 4 && t > 0.5 ? [i % 2 ? 'hills' : 'fartlek', 'tempo'] : [i % 2 ? 'hills' : 'fartlek'];
+    else if (phase === 'build') {
+      const fast = i % 3 === 0 ? 'hills' : 'intervals';
+      hard = runDays.length >= 4 ? [fast, 'tempo'] : [i % 2 ? 'tempo' : fast];
+    }
     else if (phase === 'peak') hard = runDays.length >= 4 ? ['pace', i % 2 ? 'intervals' : 'tempo'] : ['pace'];
     else hard = ['sharpen'];
     // Under 25 km a week, one hard session is plenty.
@@ -230,6 +243,12 @@ export function buildPlan(profile, startDate, weekOffset = 0) {
         : { type: 'easy', steps: [run(round(Math.min(8, km / 3)), 'easy')] }));
       if (raceDay > 0) add(raceDay - 1, { type: 'shakeout', steps: [run(3, 'easy', 'Very easy, legs loose')] });
       add(raceDay, { type: 'race', steps: [run(DIST[profile.goal] / 1000, 'race', 'Race! Start controlled, finish strong')] });
+    } else if (partWeek) {
+      // Rest of this week only: easy settling-in runs, plus the long run if its day is still to come.
+      const easyKm = Math.min(8, Math.max(3, round(km / runDays.length)));
+      for (const d of runDays.filter((x) => x >= weekday(startDate))) {
+        add(d, d === longDay ? longRun(longKm, phase, profile.goal, i) : { type: 'easy', steps: [run(easyKm, 'easy', 'Settling-in run')] });
+      }
     } else {
       add(longDay, longRun(longKm, phase, profile.goal, i));
       const hardDays = chooseHardDays(runDays, longDay, other, hard.length).sort((a, b) => a - b);
@@ -247,7 +266,7 @@ export function buildPlan(profile, startDate, weekOffset = 0) {
     }
 
     // Safety cap: a normal week is never more than 10% above the last normal week.
-    const normal = !isRaceWeek && !recovery && phase !== 'taper';
+    const normal = !isRaceWeek && !recovery && phase !== 'taper' && !partWeek;
     const total = () => workouts.reduce((s, w) => s + w.km, 0);
     if (normal && lastNormal && total() > lastNormal * 1.1) {
       const lr = workouts.find((w) => w.type === 'long');
@@ -265,6 +284,9 @@ export function buildPlan(profile, startDate, weekOffset = 0) {
       }
     }
     if (normal) { lastNormal = total(); lastLong = workouts.find((w) => w.type === 'long')?.km ?? lastLong; }
+
+    // Starting mid-week: drop the runs on days already gone.
+    if (i === 0) for (let k = workouts.length - 1; k >= 0; k--) if (workouts[k].date < startDate) workouts.splice(k, 1);
 
     workouts.sort((a, b) => a.date.localeCompare(b.date));
     weeks.push({

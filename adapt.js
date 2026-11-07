@@ -35,7 +35,7 @@ export function recentVolume(plan, logs, extras, today) {
 // Suggest a rebuild when last week was well off plan.
 export function volumeCheck(plan, logs, extras, today) {
   const last = weekOf(plan, addDays(mondayOf(today), -1));
-  if (!last || last.race) return null;
+  if (!last || last.race || (plan.created && last.start < plan.created)) return null; // skip a part week at the start
   const s = weekStats(last, logs, extras);
   if (!s.planned) return null;
   const ratio = s.done / s.planned;
