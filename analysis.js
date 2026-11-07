@@ -8,7 +8,7 @@ export function runList(plan, logs, extras) {
   const planned = plan.weeks.flatMap((w) => w.workouts)
     .filter((w) => logs[w.id]?.status === 'done')
     .map((w) => ({ id: w.id, date: w.date, type: w.type, ...logs[w.id] }));
-  const extra = extras.map((e) => ({ type: 'extra', ...e }));
+  const extra = extras.filter((e) => !e.walk).map((e) => ({ type: 'extra', ...e })); // walks are kept out of run stats
   return [...planned, ...extra].sort((a, b) => a.date.localeCompare(b.date));
 }
 
@@ -47,13 +47,15 @@ export function records(runs) {
 // Averages for a set of runs. Pace is total time / total km. Heart rate is time-weighted.
 // Heartbeats per km = HR x minutes per km: lower means fitter (same distance, fewer beats).
 export function averages(runs) {
-  const timed = runs.filter((r) => r.sec && r.km);
+  const timed = runs.filter((r) => r.sec && r.km >= 0.5); // ignore tiny test runs
   const withHr = timed.filter((r) => r.hr);
   const sum = (arr, f) => arr.reduce((s, r) => s + f(r), 0);
   const pace = timed.length ? sum(timed, (r) => r.sec) / sum(timed, (r) => r.km) : null;
   const hr = withHr.length ? sum(withHr, (r) => r.hr * r.sec) / sum(withHr, (r) => r.sec) : null;
   const beats = withHr.length ? sum(withHr, (r) => (r.hr * r.sec) / 60) / sum(withHr, (r) => r.km) : null;
-  return { n: runs.length, pace, hr, beats };
+  const withCad = timed.filter((r) => r.cad);
+  const cad = withCad.length ? sum(withCad, (r) => r.cad * r.sec) / sum(withCad, (r) => r.sec) : null;
+  return { n: runs.length, pace, hr, beats, cad };
 }
 
 // Last 28 days against the 28 days before.

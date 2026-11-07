@@ -12,7 +12,7 @@ export function weekStats(week, logs, extras = []) {
     const log = logs[w.id];
     if (log?.status === 'done') { done += log.km || 0; plannedDone += w.km; count++; }
   }
-  for (const e of extras) if (e.date >= week.start && e.date <= end) done += e.km || 0;
+  for (const e of extras) if (!e.walk && e.date >= week.start && e.date <= end) done += e.km || 0;
   return { planned: week.km, done: Math.round(done * 10) / 10, count, total: week.workouts.length };
 }
 
@@ -28,7 +28,7 @@ export function recentVolume(plan, logs, extras, today) {
     const log = logs[x.id];
     if (log?.status === 'done' && x.date >= since) longest = Math.max(longest, log.km || 0);
   }
-  for (const e of extras) if (e.date >= since) longest = Math.max(longest, e.km || 0);
+  for (const e of extras) if (!e.walk && e.date >= since) longest = Math.max(longest, e.km || 0);
   return { km: Math.round(km), longest };
 }
 

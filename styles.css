@@ -287,3 +287,8 @@ input[type="range"] { padding: 0; min-height: 36px; accent-color: var(--accent);
 .runrow .row-between { margin-bottom: 2px; }
 .runrow .link { padding: 4px 0; }
 .toggle.tm { flex: none; align-self: center; margin: 0 0 16px; font-weight: 600; font-size: 14px; }
+
+.runrow { display: flex; flex-direction: column; gap: 2px; cursor: pointer; }
+.stats td:first-child { color: var(--muted); }
+
+.toggle input[name="walk"] { width: 22px; height: 22px; }

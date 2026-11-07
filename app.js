@@ -3,10 +3,10 @@ import { buildPlan, zonePaces, TYPES, HARD, stepsKm } from './plan.js';
 import { weekOf, weekStats, volumeCheck, rebuild, paceCheck, vdotFromResult } from './adapt.js';
 import { vdotFromRace, predict, DIST, fmtPace, fmtTime, parseTime } from './vdot.js';
 import { addDays, weekday, mondayOf, daysBetween, today, fmtDate, fmtShort, DAY } from './dates.js';
-import { fetchRuns, applyRuns, syncWindow } from './sync.js';
+import { fetchRuns, applyRuns, syncWindow, fetchStreams, runWalk } from './sync.js';
 import { weeklyBars, line, dots } from './charts.js';
 import { ensureTraining, sessionsOn, isHard, hardDays, addSession, removeSession, moveSession, applyHardDays, clashFor, swapOption } from './training.js';
-import { runList, filterRuns, records, compare } from './analysis.js';
+import { runList, filterRuns, records, compare, averages } from './analysis.js';
 
 let S = load();
 let tab = 'today';
@@ -77,6 +77,45 @@ function duration(sec) {
   return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ''}`;
 }
 
+// Pace text, or '-' when the distance is too short to mean anything.
+const paceOf = (sec, km) => (sec && km >= 0.1 ? `${fmtPace(sec / km)} /km` : '-');
+
+// Every number we have for a logged run.
+function runStats(r) {
+  const rows = [
+    ['Distance', `${r.km} km`],
+    ['Time', r.sec ? fmtTime(r.sec) : null],
+    ['Avg pace', r.sec ? paceOf(r.sec, r.km) : null],
+    ['Avg heart rate', r.hr ? `${Math.round(r.hr)} bpm` : null],
+    ['Max heart rate', r.maxHr ? `${Math.round(r.maxHr)} bpm` : null],
+    ['Heartbeats per km', r.hr && r.sec && r.km >= 0.5 ? Math.round((r.hr * r.sec) / 60 / r.km) : null],
+    ['Climb', r.elev ? `${Math.round(r.elev)} m` : null],
+    ['Calories', r.cal ? Math.round(r.cal) : null],
+    ['Training load', r.load ? Math.round(r.load) : null],
+    ['Avg cadence', r.cad ? `${Math.round(r.cad)} spm` : null],
+    ['Max cadence', r.maxCad ? `${Math.round(r.maxCad)} spm` : null],
+    ['Running time', r.walkSec >= 30 && r.runSec ? `${fmtTime(r.runSec)} (${Math.round((100 * r.runSec) / (r.runSec + r.walkSec))}%)` : null],
+    ['Walking time', r.walkSec >= 30 ? `${fmtTime(r.walkSec)} (${Math.round((100 * r.walkSec) / (r.runSec + r.walkSec))}%)` : null],
+    ['Effort', r.rpe ? `${r.rpe}/10` : null],
+    ['Type', r.walk ? 'Walk (not counted in running stats)' : r.treadmill ? 'Treadmill run' : 'Outdoor run'],
+    ['From', r.source === 'intervals' ? 'Garmin via intervals.icu' : r.source === 'old plan' ? 'An older plan' : 'Logged by hand'],
+  ].filter(([, v]) => v != null);
+  return `<table class="table stats">${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</table>${r.note ? `<p class="muted">${esc(r.note)}</p>` : ''}`;
+}
+
+function openRun(src, id) {
+  const r = src === 'extra' ? S.extras.find((x) => x.id === id) : S.logs[id];
+  if (!r) return;
+  if (src !== 'extra') return openWorkout(id);
+  openSheet(`<div class="sheet-head"><div><p class="eyebrow">${fmtDate(r.date)}</p><h2>${esc(r.name || (r.walk ? 'Walk' : 'Extra run'))}</h2></div></div>
+    ${runStats(r)}
+    <div class="actions">
+      ${r.walk ? '' : `<button class="btn" data-act="tread" data-src="extra" data-id="${r.id}">Count as ${r.treadmill ? 'outdoor' : 'treadmill'} run</button>`}
+      <button class="btn" data-act="walk" data-id="${r.id}">${r.walk ? 'Count as a run' : 'This was a walk'}</button>
+      <button class="btn danger" data-act="del-extra" data-id="${r.id}">Delete this run</button>
+    </div>`);
+}
+
 function statusIcon(w) {
   const log = S.logs[w.id];
   if (log?.status === 'done') return '<span class="status done" aria-label="Done">&#10003;</span>';
@@ -89,7 +128,7 @@ function workoutCard(w, big = false) {
   const t = TYPES[w.type];
   const log = S.logs[w.id];
   const sub = log?.status === 'done'
-    ? `Done: ${log.km} km${log.sec ? ` in ${fmtTime(log.sec)} (${fmtPace(log.sec / log.km)} /km)` : ''}`
+    ? `Done: ${log.km} km${log.sec ? ` in ${fmtTime(log.sec)} (${paceOf(log.sec, log.km)})` : ''}${log.hr ? ` · ${Math.round(log.hr)} bpm` : ''}`
     : `${w.km} km · about ${duration(estimate(w))}`;
   return `<button class="card workout ${big ? 'big' : ''}" data-open="${w.id}" style="--type: var(--c-${t.color})">
     <span class="type-bar"></span>
@@ -183,6 +222,7 @@ function renderSetup(prefill) {
       const plan = buildPlan(profile, start);
       const archived = S.plan ? allWorkouts().filter((w) => S.logs[w.id]?.status === 'done')
         .map((w) => ({ id: 'a' + w.id + w.date, date: w.date, type: w.type === 'race' || w.type === 'trial' ? w.type : 'extra', source: 'old plan', ...S.logs[w.id] })) : [];
+      if (S.plan) snapshot('Before starting a new plan', S.profile, archived.map((x) => x.id));
       S = { ...S, profile, plan, logs: {}, extras: [...S.extras, ...archived], vdotHistory: [...S.vdotHistory, { date: t, vdot, source: 'Setup' }], seen: {} };
       persist();
       $('#tabs').hidden = false;
@@ -296,7 +336,7 @@ function renderPlan() {
           const date = addDays(wk.start, i);
           const w = wk.workouts.find((x) => x.date === date);
           const gym = sessionsOn(T(), date);
-          const extra = S.extras.filter((x) => x.date === date).map((x) => `Extra run ${x.km} km &#10003;`);
+          const extra = S.extras.filter((x) => x.date === date).map((x) => `${x.walk ? 'Walk' : 'Extra run'} ${x.km} km &#10003;`);
           const gymText = gym.length || extra.length ? `<span class="gymline">${[...gym.map(esc), ...extra].join(' · ')}</span>` : '';
           if (!w) return `<button class="day ${gymText ? '' : 'rest'}" data-day="${date}"><span class="d">${d}</span>
             <span class="grow">${gymText || '<span class="muted">Rest</span>'}</span></button>`;
@@ -323,10 +363,12 @@ function openWorkout(id) {
       <div><p class="eyebrow">${fmtDate(w.date)} · Week ${wk.n}</p><h2>${esc(t.name)}</h2>
       <p class="muted">${w.km} km · about ${duration(estimate(w))}${w.adjusted ? ' · adjusted' : ''}</p></div></div>
     <ol class="steps">${w.steps.map(stepHtml).join('')}</ol>
-    ${done ? `<div class="card done-box"><b>Done</b> ${log.km} km${log.sec ? ` in ${fmtTime(log.sec)} · ${fmtPace(log.sec / log.km)} /km` : ''}${log.rpe ? ` · effort ${log.rpe}/10` : ''}${log.hr ? ` · ${Math.round(log.hr)} bpm` : ''}${log.note ? `<p class="muted">${esc(log.note)}</p>` : ''}${log.source === 'intervals' ? '<p class="muted small">From intervals.icu</p>' : ''}</div>` : ''}
+    ${done ? `<div class="card done-box"><b>Done</b>${runStats({ ...log, date: w.date })}</div>` : ''}
     ${log?.status === 'skipped' ? `<div class="card done-box"><b>Skipped</b>${log.note ? ` · ${esc(log.note)}` : ''}</div>` : ''}
     <div class="actions">
-      ${done ? `<button class="btn" data-act="log" data-id="${w.id}">Edit</button><button class="btn ghost" data-act="unlog" data-id="${w.id}">Undo</button>`
+      ${done ? `<button class="btn" data-act="log" data-id="${w.id}">Edit</button>
+           <button class="btn ghost" data-act="tread" data-src="plan" data-id="${w.id}">Count as ${log.treadmill ? 'outdoor' : 'treadmill'} run</button>
+           <button class="btn ghost" data-act="unlog" data-id="${w.id}">Undo (remove this run)</button>`
         : log?.status === 'skipped' ? `<button class="btn ghost" data-act="unlog" data-id="${w.id}">Undo skip</button>`
         : `<button class="btn primary" data-act="log" data-id="${w.id}">Log this run</button>
            ${w.type !== 'race' ? `<button class="btn" data-act="feel" data-id="${w.id}">Not feeling 100%</button>` : ''}
@@ -398,8 +440,9 @@ function openDay(date) {
 function afterTemplateChange() {
   const hd = hardDays(T());
   if (hd.join() !== [...S.profile.otherDays].sort().join()) {
+    const prev = copy(S.profile);
     S.profile.otherDays = hd;
-    return doRebuild('Runs rebuilt around your hard days');
+    return doRebuild('Runs rebuilt around your hard days', prev);
   }
   persist(); render();
 }
@@ -437,8 +480,10 @@ function openLog(id, extra = false) {
       ${result ? `<label class="field">${w.type === 'trial' ? '5K time' : 'Race time'} (updates your paces)<input name="result" placeholder="${w.type === 'trial' ? 'e.g. 22:30' : 'e.g. 1:45:00'}" value="${log.resultSec ? fmtTime(log.resultSec) : ''}"></label>` : ''}
       <div class="row">
         <label class="field">Avg heart rate (optional)<input type="number" name="hr" min="60" max="230" inputmode="numeric" value="${log.hr ? Math.round(log.hr) : ''}" placeholder="bpm"></label>
-        <label class="toggle tm"><input type="checkbox" name="treadmill" ${log.treadmill ? 'checked' : ''}> Treadmill</label>
+        <label class="field">Avg cadence (optional)<input type="number" name="cad" min="60" max="240" inputmode="numeric" value="${log.cad ? Math.round(log.cad) : ''}" placeholder="spm"></label>
       </div>
+      <label class="toggle"><input type="checkbox" name="treadmill" ${log.treadmill ? 'checked' : ''}> Treadmill</label>
+      ${extra ? '<label class="toggle"><input type="checkbox" name="walk"> This was a walk (kept out of running stats)</label>' : ''}
       <label class="field">How hard did it feel? <output id="rpe-out">${log.rpe ?? 5}</output>/10
         <input type="range" min="1" max="10" name="rpe" value="${log.rpe ?? 5}"></label>
       <p class="hint">1 to 3 easy chat · 5 to 6 comfortably hard · 8 to 9 very hard · 10 all out</p>
@@ -456,9 +501,11 @@ function openLog(id, extra = false) {
       if (f.time.value.trim() && !sec) return ($('#log-error', root).textContent = 'Time should look like 32:10 or 1:05:00.');
       const hr = f.hr.value ? Number(f.hr.value) : null;
       if (hr && (hr < 60 || hr > 230)) return ($('#log-error', root).textContent = 'Heart rate should be between 60 and 230.');
-      const entry = { km, sec, rpe: Number(f.rpe.value), note: f.note.value.trim(), hr, treadmill: f.treadmill.checked };
+      const cad = f.cad.value ? Number(f.cad.value) : null;
+      if (cad && (cad < 60 || cad > 240)) return ($('#log-error', root).textContent = 'Cadence should be between 60 and 240 steps a minute.');
+      const entry = { km, sec, rpe: Number(f.rpe.value), note: f.note.value.trim(), hr, cad, treadmill: f.treadmill.checked, treadmillSet: true };
       if (extra) {
-        S.extras.push({ id: 'm' + Date.now(), date: f.date.value || today(), source: 'manual', ...entry });
+        S.extras.push({ id: 'm' + Date.now(), date: f.date.value || today(), source: 'manual', ...entry, walk: f.walk.checked || undefined });
       } else {
         const rs = result && f.result.value.trim() ? parseTime(f.result.value) : null;
         if (result && f.result.value.trim() && !rs) return ($('#log-error', root).textContent = 'Result time should look like 22:30.');
@@ -488,8 +535,28 @@ function setVdot(v, source) {
   setTimeout(() => toast(`Paces updated (fitness ${old} to ${S.profile.vdot})`), 400);
 }
 
-function doRebuild(msg = 'Plan rebuilt from next Monday') {
+// Keep a copy of the plan before anything replaces it, so it can be restored. Last 5 kept.
+const copy = (x) => JSON.parse(JSON.stringify(x));
+function snapshot(reason, profile = S.profile, archived = []) {
+  if (!S.plan) return;
+  S.planHistory = [{ id: 'p' + Date.now(), savedAt: today(), reason, profile: copy(profile), plan: copy(S.plan), logs: copy(S.logs), archived },
+    ...(S.planHistory || [])].slice(0, 5);
+}
+
+function restorePlan(id) {
+  const snap = (S.planHistory || []).find((x) => x.id === id);
+  if (!snap) return;
+  const rest = S.planHistory.filter((x) => x.id !== id);
+  snapshot('Before restoring an older plan');
+  S.planHistory = [S.planHistory[0], ...rest].slice(0, 5);
+  S.extras = S.extras.filter((e) => !snap.archived.includes(e.id)); // its runs come back as plan runs, not extras
+  S.profile = snap.profile; S.plan = snap.plan; S.logs = snap.logs;
+  persist(); render(); toast('Older plan restored');
+}
+
+function doRebuild(msg = 'Plan rebuilt from next Monday', prevProfile = S.profile) {
   try {
+    snapshot('Before rebuild', prevProfile);
     const next = addDays(mondayOf(today()), 7);
     for (const w of S.plan.weeks) if (w.start >= next) for (const x of w.workouts) delete S.logs[x.id];
     S.plan = rebuild(S.profile, S.plan, S.logs, S.extras, today());
@@ -510,20 +577,26 @@ function renderProgress() {
   const totalKm = Math.round(all.reduce((sum, r) => sum + (r.km || 0), 0) * 10) / 10;
   const rec = records(all);
   const runs = filterRuns(all, pf);
-  const timed = runs.filter((r) => r.sec && r.km);
+  const timed = runs.filter((r) => r.sec && r.km >= 0.5);
   const cls = (r) => (HARD.has(r.type) ? 'hard' : '');
   const pacePts = timed.map((r) => ({ label: fmtShort(r.date), y: r.sec / r.km, cls: cls(r) }));
   const hrPts = timed.filter((r) => r.hr).map((r) => ({ label: fmtShort(r.date), y: r.hr, cls: cls(r) }));
+  const cadPts = timed.filter((r) => r.cad).map((r) => ({ label: fmtShort(r.date), y: r.cad, cls: cls(r) }));
+  const beatPts = timed.filter((r) => r.hr).map((r) => ({ label: fmtShort(r.date), y: (r.hr * r.sec) / 60 / r.km, cls: cls(r) }));
+  const avg = averages(runs);
   const cmp = compare(runs, t);
   const seg = (key, opts) => `<div class="seg mini">${opts.map(([v, label]) =>
     `<button class="${pf[key] === v ? 'on' : ''}" data-act="pf" data-key="${key}" data-val="${v}" aria-pressed="${pf[key] === v}">${label}</button>`).join('')}</div>`;
-  const change = (a, b, fmt, unit) => {
+  // goodWhen: 'lower' (pace, beats per km) or null when neither direction is simply better (heart rate, cadence)
+  const change = (a, b, fmt, unit, goodWhen = 'lower') => {
     if (a == null || b == null) return a == null ? '-' : `${fmt(a)}${unit}`;
-    const better = a < b;
-    return `${fmt(b)} &rarr; <b>${fmt(a)}</b>${unit} <span class="${better ? 'good' : 'muted'}">${Math.abs(a - b) < 0.5 ? 'same' : better ? 'better' : 'higher'}</span>`;
+    const word = Math.abs(a - b) < 0.5 ? 'same' : a < b ? 'lower' : 'higher';
+    const good = goodWhen === 'lower' && word === 'lower';
+    return `${fmt(b)} &rarr; <b>${fmt(a)}</b>${unit} <span class="${good ? 'good' : 'muted'}">${good ? 'better' : word}</span>`;
   };
   const prRow = (name, r) => `<tr><td>${name}</td><td>${r ? fmtTime(r.sec) : '-'}</td><td class="muted small">${r ? `${fmtShort(r.date)}${r.est ? ' · from a longer run' : ''}` : ''}</td></tr>`;
-  const recent = all.slice().reverse().slice(0, 12);
+  const walks = S.extras.filter((e) => e.walk).map((e) => ({ type: 'extra', ...e }));
+  const recent = [...all, ...walks].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 12);
 
   $('#view').innerHTML = `
     <section><h1>Progress</h1>
@@ -555,16 +628,27 @@ function renderProgress() {
       ${seg('where', [['all', 'All'], ['outdoor', 'Outdoor'], ['treadmill', 'Treadmill']])}
       ${seg('kind', [['all', 'All runs'], ['easy', 'Easy and long only']])}
       <p class="muted small">${runs.length} run${runs.length === 1 ? '' : 's'}. Easy and long only is the fairest comparison, since hard sessions skew pace and heart rate.</p>
+      <div class="tiles">
+        <div class="tile"><span class="big">${avg.pace ? fmtPace(avg.pace) : '-'}</span><span class="muted small">avg pace /km</span></div>
+        <div class="tile"><span class="big">${avg.hr ? Math.round(avg.hr) : '-'}</span><span class="muted small">avg run heart rate</span></div>
+        <div class="tile"><span class="big">${avg.cad ? Math.round(avg.cad) : '-'}</span><span class="muted small">avg cadence (spm)</span></div>
+      </div>
       <h3>Average pace per run</h3>
       ${dots(pacePts, { fmt: fmtPace, lowerIsBetter: true, label: 'Average pace per run' }) || '<p class="muted small">Needs 2 runs with a time.</p>'}
       <h3>Average heart rate per run</h3>
       ${dots(hrPts, { fmt: (v) => String(Math.round(v)), label: 'Average heart rate per run' }) || '<p class="muted small">Needs 2 runs with heart rate. Synced Garmin runs include it, or add it when you log.</p>'}
-      <p class="legend small"><span class="key done"></span>Easy, long and extra <span class="key hard"></span>Hard sessions · line shows the trend. Faster is higher on the pace chart.</p>
+      <h3>Heartbeats per km per run</h3>
+      ${dots(beatPts, { fmt: (v) => String(Math.round(v)), lowerIsBetter: true, label: 'Heartbeats per km per run' }) || '<p class="muted small">Needs 2 runs with heart rate.</p>'}
+      <p class="muted small">Your clearest fitness signal: fewer beats per km is higher on this chart. Pace and heart rate alone move with effort; this joins them.</p>
+      <h3>Average cadence per run</h3>
+      ${dots(cadPts, { fmt: (v) => String(Math.round(v)), label: 'Average cadence per run' }) || '<p class="muted small">Needs 2 runs with cadence. Garmin runs include it.</p>'}
+      <p class="legend small"><span class="key done"></span>Easy, long and extra <span class="key hard"></span>Hard sessions · dashed line shows the trend. Faster is higher on the pace chart.</p>
       <h3>Last 4 weeks vs the 4 before</h3>
       <table class="table">
         <tr><td>Avg pace</td><td>${change(cmp.recent.pace, cmp.before.pace, fmtPace, ' /km')}</td></tr>
-        <tr><td>Avg heart rate</td><td>${change(cmp.recent.hr, cmp.before.hr, (v) => Math.round(v), ' bpm')}</td></tr>
+        <tr><td>Avg heart rate</td><td>${change(cmp.recent.hr, cmp.before.hr, (v) => Math.round(v), ' bpm', null)}</td></tr>
         <tr><td>Heartbeats per km</td><td>${change(cmp.recent.beats, cmp.before.beats, (v) => Math.round(v), '')}</td></tr>
+        <tr><td>Avg cadence</td><td>${change(cmp.recent.cad, cmp.before.cad, (v) => Math.round(v), ' spm', null)}</td></tr>
       </table>
       <p class="muted small">Heartbeats per km joins pace and heart rate: fewer beats to cover a km means you're getting fitter.</p>
     </section>
@@ -575,11 +659,11 @@ function renderProgress() {
 
     ${recent.length ? `<section><h2>Recent runs</h2>${recent.map((r) => {
       const isExtra = r.type === 'extra';
-      return `<div class="card runrow"><div class="row-between"><span><b>${fmtDate(r.date)}</b> · ${esc(isExtra ? (r.name || 'Extra run') : TYPES[r.type]?.name || r.type)}</span>
-        <button class="link" data-act="tread" data-src="${isExtra ? 'extra' : 'plan'}" data-id="${r.id}">${r.treadmill ? 'Treadmill' : 'Outdoor'}</button></div>
-        <span class="muted small">${r.km} km${r.sec ? ` · ${fmtTime(r.sec)} · ${fmtPace(r.sec / r.km)} /km` : ''}${r.hr ? ` · ${Math.round(r.hr)} bpm` : ''}</span>
-        ${isExtra ? `<button class="link small" data-act="del-extra" data-id="${r.id}">Delete</button>` : ''}</div>`;
-    }).join('')}<p class="muted small">Tap Outdoor or Treadmill to switch how a run is counted.</p></section>` : ''}`;
+      return `<button class="card runrow" data-act="run" data-src="${isExtra ? 'extra' : 'plan'}" data-id="${r.id}">
+        <span class="row-between"><span><b>${fmtDate(r.date)}</b> · ${esc(isExtra ? (r.name || (r.walk ? 'Walk' : 'Extra run')) : TYPES[r.type]?.name || r.type)}</span>
+        <span class="muted small">${r.walk ? 'Walk' : r.treadmill ? 'Treadmill' : 'Outdoor'} &rsaquo;</span></span>
+        <span class="muted small">${r.km} km${r.sec ? ` · ${fmtTime(r.sec)} · ${paceOf(r.sec, r.km)}` : ''}${r.hr ? ` · ${Math.round(r.hr)} bpm` : ''}${r.maxHr ? ` (max ${Math.round(r.maxHr)})` : ''}${r.cad ? ` · ${Math.round(r.cad)} spm` : ''}</span></button>`;
+    }).join('')}<p class="muted small">Tap a run for all its numbers, to switch treadmill or outdoor, or to delete it.</p></section>` : ''}`;
 }
 
 // ---------- settings ----------
@@ -623,6 +707,13 @@ function renderSettings() {
     </section>
 
     ${trainingSettings()}
+
+    <section class="card"><h2>Previous plans</h2>
+      <p class="muted small">A copy is saved automatically whenever a plan is rebuilt or replaced (last 5).</p>
+      ${(S.planHistory || []).map((h) => `<div class="row-between lib"><span>${GOAL_NAME[h.profile.goal]} · race ${fmtShort(h.profile.raceDate)}<br>
+        <span class="muted small">Saved ${fmtShort(h.savedAt)} · ${esc(h.reason.toLowerCase())} · ${Object.values(h.logs).filter((l) => l.status === 'done').length} runs logged</span></span>
+        <button class="btn" data-act="restore-plan" data-id="${h.id}">Restore</button></div>`).join('') || '<p class="muted small">None yet.</p>'}
+    </section>
 
     <section class="card"><h2>Auto sync (free)</h2>
       <p class="muted small">Garmin watch &rarr; Garmin Connect &rarr; intervals.icu (free) &rarr; this app. Strava isn't used: its API now needs a paid subscription.</p>
@@ -669,8 +760,9 @@ function renderSettings() {
     if (!runDays.includes(longRunDay)) return err('Long run day must be a run day.');
     if (f.goalTime.value.trim() && !goalTime) return err('Goal time should look like 1:45:00.');
     if (daysBetween(today(), f.raceDate.value) < 21) return err('Race date must be at least 3 weeks away.');
+    const prev = copy(S.profile);
     S.profile = { ...S.profile, raceDate: f.raceDate.value, goalTime, runDays, longRunDay, otherDays: hardDays(T()), timeTrials: f.timeTrials.checked };
-    doRebuild('Saved. Weeks from next Monday rebuilt.');
+    doRebuild('Saved. Weeks from next Monday rebuilt.', prev);
   });
   $('#lib-add').addEventListener('submit', (e) => {
     e.preventDefault();
@@ -708,9 +800,18 @@ async function runSync(loud) {
     const [from, to] = syncWindow(today(), S.sync.lastSync);
     const runs = await fetchRuns(S.sync, from, to);
     const r = applyRuns(S, runs);
+    // Max cadence and run/walk time need each run's second-by-second data: fetched once per run.
+    const needStreams = [...Object.values(S.logs), ...S.extras].filter((x) => x.extId && !x.streamsDone && (x.streamTries || 0) < 2).slice(0, 8);
+    for (const rec of needStreams) {
+      try {
+        const st = runWalk(await fetchStreams(S.sync, rec.extId), rec.walk);
+        if (st) Object.assign(rec, st);
+        rec.streamsDone = true;
+      } catch { rec.streamTries = (rec.streamTries || 0) + 1; }
+    }
     S.sync.lastSync = today();
     S.sync.lastError = '';
-    S.sync.lastResult = `Last sync ${fmtDate(today())}: found ${runs.length} run${runs.length === 1 ? '' : 's'} from ${fmtShort(from)}, ${r.matched} ticked off the plan, ${r.extra} added as extra runs.`;
+    S.sync.lastResult = `Last sync ${fmtDate(today())}: found ${runs.length} run${runs.length === 1 ? '' : 's'} from ${fmtShort(from)}, ${r.matched} ticked off the plan, ${r.extra} added as extra runs, ${r.updated} updated.`;
     persist();
     render();
     if (loud || r.matched || r.extra) toast(`Synced: ${r.matched} planned run${r.matched === 1 ? '' : 's'}, ${r.extra} extra`);
@@ -788,12 +889,20 @@ document.addEventListener('click', (e) => {
       persist(); closeSheet(); render(); return toast('Runs swapped');
     }
     case 'pf': pf[a.dataset.key] = a.dataset.val; return render();
+    case 'run': return openRun(a.dataset.src, id);
+    case 'walk': { const r = S.extras.find((x) => x.id === id); r.walk = !r.walk; persist(); render(); return openRun('extra', id); }
+    case 'restore-plan':
+      if (!confirm('Restore this plan? Your current plan is saved under Previous plans first, so you can switch back.')) return;
+      return restorePlan(id);
     case 'tread': {
       const r = a.dataset.src === 'extra' ? S.extras.find((x) => x.id === id) : S.logs[id];
       r.treadmill = !r.treadmill;
+      r.treadmillSet = true; // your choice wins over what the sync detects
       break;
     }
-    case 'del-extra': S.extras = S.extras.filter((x) => x.id !== id); break;
+    case 'del-extra':
+      if (!confirm('Delete this run from Runplan?')) return;
+      S.extras = S.extras.filter((x) => x.id !== id); break;
     case 'new-plan': closeSheet(); return renderSetup({ ...S.profile, goalTime: S.profile.goalTime ? fmtTime(S.profile.goalTime) : '', raceTime: S.profile.raceTime || '' });
     case 'reset':
       if (!confirm('Delete your plan and every logged run on this phone? This cannot be undone.')) return;
