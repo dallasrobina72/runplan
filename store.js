@@ -4,7 +4,7 @@ const KEY = 'runplan.v1';
 const blank = () => ({
   profile: null, plan: null, logs: {}, extras: [], vdotHistory: [],
   sync: { athleteId: '0', apiKey: '', lastSync: null, imported: [] },
-  seen: {}, lastBackup: null,
+  seen: {}, lastBackup: null, training: null,
 });
 
 export function load() {

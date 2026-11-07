@@ -17,6 +17,7 @@
   --c-pace: #b78cff;
   --c-trial: #ffd84d;
   --c-race: #c8f560;
+  --c-gym: #9aa3ad;
 
   --ph-base: #2f6f5a;
   --ph-build: #2e5f99;
@@ -47,6 +48,7 @@
     --c-pace: #7a45c9;
     --c-trial: #a88a00;
     --c-race: #3d6b00;
+    --c-gym: #5d6873;
     color-scheme: light;
   }
 }
@@ -243,3 +245,30 @@ input[type="range"] { padding: 0; min-height: 36px; accent-color: var(--accent);
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+/* Gym and other training */
+.gymline { display: block; color: var(--muted); font-size: 13px; }
+.gymbar { width: 14px; height: 3px; border-radius: 2px; background: transparent; }
+.gymbar.on { background: var(--c-gym); }
+.training { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
+.training h3, section h3 { font-size: 16px; margin: 0 0 10px; }
+.gymrow { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
+.gymrow select, .wkrow select, .add-session {
+  min-height: 40px; padding: 0 8px; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 10px; font-size: 16px; max-width: 120px;
+}
+.add-session { width: 100%; max-width: none; margin: 8px 0; }
+.tick { width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--border); background: transparent; color: var(--muted); font-weight: 700; cursor: pointer; }
+.tick.on { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.wkrow { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.wkrow .d { width: 36px; color: var(--muted); font-size: 14px; flex: none; }
+.wkrow select { width: 52px; flex: none; }
+.chipwrap { display: flex; flex-wrap: wrap; gap: 6px; }
+.tchip { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); font-size: 14px; cursor: pointer; }
+.tchip.hard { border-color: var(--c-tempo); }
+.lib { padding: 6px 0; border-bottom: 1px solid var(--border); }
+.lib .toggle { margin: 0; font-size: 13px; color: var(--muted); }
+.lib .toggle input { width: 18px; height: 18px; }
+#lib-add { margin-top: 12px; }
+#lib-add input { padding: 12px; min-height: 46px; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 10px; font-size: 16px; }
+#lib-add .btn { flex: none; }
+.banner.small { font-size: 14px; }

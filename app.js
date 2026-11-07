@@ -5,6 +5,7 @@ import { vdotFromRace, predict, DIST, fmtPace, fmtTime, parseTime } from './vdot
 import { addDays, weekday, mondayOf, daysBetween, today, fmtDate, fmtShort, DAY } from './dates.js';
 import { fetchRuns, applyRuns, syncWindow } from './sync.js';
 import { weeklyBars, line } from './charts.js';
+import { ensureTraining, sessionsOn, isHard, hardDays, addSession, removeSession, moveSession, applyHardDays } from './training.js';
 
 let S = load();
 let tab = 'today';
@@ -97,7 +98,7 @@ function workoutCard(w, big = false) {
 function renderSetup(prefill) {
   const p = prefill || {
     goal: 'half', raceDate: '2027-02-28', raceDist: '5k', raceTime: '', goalTime: '',
-    weeklyKm: 20, longestKm: 10, runDays: [1, 3, 5, 6], longRunDay: 6, otherDays: [], timeTrials: true,
+    weeklyKm: 20, longestKm: 10, runDays: [1, 3, 5, 6], longRunDay: 6, otherDays: S.training ? hardDays(S.training) : [], timeTrials: true,
   };
   $('#tabs').hidden = true;
   $('#view').innerHTML = `
@@ -158,10 +159,12 @@ function renderSetup(prefill) {
     if (runDays.length < 2) return err('Pick at least 2 run days.');
     if (!runDays.includes(longRunDay)) return err('Your long run day must be one of your run days.');
     const vdot = Math.round(vdotFromRace(DIST[form.raceDist.value], sec) * 10) / 10;
+    const T = ensureTraining(S);
+    applyHardDays(T, checked(form, 'otherDays'));
     const profile = {
       goal: form.goal.value, raceDate: form.raceDate.value, vdot, goalTime,
       weeklyKm: Number(form.weeklyKm.value) || 0, longestKm: Number(form.longestKm.value) || 0,
-      runDays, longRunDay, otherDays: checked(form, 'otherDays'), timeTrials: form.timeTrials.checked,
+      runDays, longRunDay, otherDays: hardDays(T), timeTrials: form.timeTrials.checked,
       raceDist: form.raceDist.value, raceTime: form.raceTime.value,
     };
     const t = today();
@@ -217,7 +220,9 @@ function renderToday() {
   if (t < first) main = `<div class="card empty"><p class="title">Plan starts ${fmtDate(first)}</p><p class="muted">Rest up, or log an easy run if you go out before then.</p></div>`;
   else if (raceIn < 0) main = `<div class="card empty"><p class="title">Race done</p><p class="muted">Log your result on race day, then start a new plan in Settings (a 5K block works well next).</p></div>`;
   else if (todays.length) main = todays.map((w) => workoutCard(w, true)).join('');
-  else main = `<div class="card empty"><p class="title">Rest day</p><p class="muted">${p.otherDays.includes(weekday(t)) ? 'Other training today. Keep it controlled.' : 'Recovery is training too.'}</p></div>`;
+  else if (sessionsOn(T(), t).length) main = '';
+  else main = `<div class="card empty"><p class="title">Rest day</p><p class="muted">Recovery is training too.</p></div>`;
+  main += sessionsOn(T(), t).map((n) => gymCard(t, n)).join('');
 
   let week = '';
   if (wk) {
@@ -252,8 +257,10 @@ function weekStrip(wk) {
     const w = wk.workouts.find((x) => x.date === date);
     const log = w && S.logs[w.id];
     const cls = w ? `has ${log?.status || ''}` : '';
-    return `<button class="strip-day ${cls} ${date === today() ? 'today' : ''}" ${w ? `data-open="${w.id}"` : 'disabled'} style="${w ? `--type: var(--c-${TYPES[w.type].color})` : ''}">
-      <span class="small">${d}</span><span class="dot"></span><span class="small">${w ? w.km : ''}</span></button>`;
+    const gym = sessionsOn(T(), date).length;
+    const target = w ? `data-open="${w.id}"` : gym ? `data-day="${date}"` : 'disabled';
+    return `<button class="strip-day ${cls} ${date === today() ? 'today' : ''}" ${target} style="${w ? `--type: var(--c-${TYPES[w.type].color})` : ''}">
+      <span class="small">${d}</span><span class="dot"></span><span class="small">${w ? w.km : ''}</span><span class="gymbar ${gym ? 'on' : ''}"></span></button>`;
   }).join('')}</div>`;
 }
 
@@ -276,10 +283,12 @@ function renderPlan() {
         ${DAY.map((d, i) => {
           const date = addDays(wk.start, i);
           const w = wk.workouts.find((x) => x.date === date);
-          const other = S.profile.otherDays.includes(i);
-          if (!w) return `<div class="day rest"><span class="d">${d}</span><span class="muted">Rest${other ? ' · other training' : ''}</span></div>`;
+          const gym = sessionsOn(T(), date);
+          const gymText = gym.length ? `<span class="gymline">${gym.map(esc).join(' · ')}</span>` : '';
+          if (!w) return `<button class="day ${gym.length ? '' : 'rest'}" data-day="${date}"><span class="d">${d}</span>
+            <span class="grow">${gym.length ? gymText : '<span class="muted">Rest</span>'}</span></button>`;
           return `<button class="day" data-open="${w.id}" style="--type: var(--c-${TYPES[w.type].color})"><span class="d">${d}</span><span class="pill"></span>
-            <span class="grow">${esc(TYPES[w.type].name)}${other ? ' <span class="muted small">· other training</span>' : ''}</span><span class="muted">${w.km} km</span>${statusIcon(w)}</button>`;
+            <span class="grow">${esc(TYPES[w.type].name)}${gymText}</span><span class="muted">${w.km} km</span>${statusIcon(w)}</button>`;
         }).join('')}
       </details>`;
     }).join('')}`;
@@ -314,7 +323,76 @@ function openWorkout(id) {
     ${!done && w.type !== 'race' ? `<label class="field">Move to<select data-act="move" data-id="${w.id}"><option value="">Pick a day this week</option>${moveDays.map((x) =>
       `<option value="${x.date}">${x.d} ${fmtShort(x.date)}${wk.workouts.some((o) => o.date === x.date) ? ' (swap)' : ''}</option>`).join('')}</select></label>` : ''}
     ${HARD.has(w.type) && w.type !== 'race' ? `<p class="muted small">Hit the paces on the reps, not the whole run. Log how hard it felt so the app can tune your paces.</p>` : ''}
+    ${clashNote(w)}
+    ${dayTraining(w.date)}
   `);
+}
+
+// ---------- gym and other training ----------
+const T = () => ensureTraining(S);
+const doneKey = (date, name) => `${date}|${name}`;
+
+function gymCard(date, name) {
+  const done = T().done[doneKey(date, name)];
+  return `<button class="card workout gym" data-day="${date}" style="--type: var(--c-gym)"><span class="type-bar"></span>
+    <span class="grow"><span class="eyebrow">${fmtDate(date)} · ${isHard(T(), name) ? 'Hard on legs' : 'Gym'}</span><span class="title">${esc(name)}</span></span>
+    ${done ? '<span class="status done" aria-label="Done">&#10003;</span>' : ''}</button>`;
+}
+
+function clashNote(w) {
+  const hard = sessionsOn(T(), w.date).filter((n) => isHard(T(), n));
+  if (!hard.length || !(HARD.has(w.type) || w.type === 'long')) return '';
+  return `<p class="banner quiet small">Same day as ${hard.map(esc).join(' and ')}. Run first, or move one of them.</p>`;
+}
+
+function dayTraining(date) {
+  const wk = weekOf(S.plan, date);
+  const days = wk ? DAY.map((d, i) => ({ d, date: addDays(wk.start, i) })).filter((x) => x.date !== date) : [];
+  const list = sessionsOn(T(), date);
+  return `<section class="training"><h3>Gym and training</h3>
+    ${list.map((n) => {
+      const done = T().done[doneKey(date, n)];
+      return `<div class="gymrow">
+        <button class="tick ${done ? 'on' : ''}" data-act="gym-done" data-date="${date}" data-name="${esc(n)}" aria-label="${done ? 'Mark not done' : 'Mark done'}">&#10003;</button>
+        <span class="grow">${esc(n)}${isHard(T(), n) ? ' <span class="muted small">hard on legs</span>' : ''}</span>
+        <select data-act="gym-move" data-date="${date}" data-name="${esc(n)}" aria-label="Move ${esc(n)}"><option value="">Move</option>${days.map((x) => `<option value="${x.date}">${x.d} ${fmtShort(x.date)}</option>`).join('')}</select>
+        <button class="link" data-act="gym-remove" data-date="${date}" data-name="${esc(n)}">Remove</button></div>`;
+    }).join('') || '<p class="muted small">Nothing planned.</p>'}
+    <select class="add-session" data-act="gym-add" data-date="${date}" aria-label="Add a session"><option value="">+ Add a session to this day</option>${T().library.map((x) => `<option value="${esc(x.name)}">${esc(x.name)}</option>`).join('')}</select>
+    <p class="muted small">Changes here are for this date only. Set your usual week in Settings.</p></section>`;
+}
+
+function openDay(date) {
+  const w = allWorkouts().find((x) => x.date === date);
+  if (w) return openWorkout(w.id);
+  openSheet(`<div class="sheet-head"><div><p class="eyebrow">${fmtDate(date)}</p><h2>No run</h2></div></div>${dayTraining(date)}`);
+}
+
+// Changing which days are hard on the legs rebuilds the coming weeks around them.
+function afterTemplateChange() {
+  const hd = hardDays(T());
+  if (hd.join() !== [...S.profile.otherDays].sort().join()) {
+    S.profile.otherDays = hd;
+    return doRebuild('Runs rebuilt around your hard days');
+  }
+  persist(); render();
+}
+
+function trainingSettings() {
+  const t = T();
+  return `<section class="card"><h2>Weekly gym and training</h2>
+    <p class="muted small">Your usual week. Sessions marked hard on legs keep hard runs off that day and the day after.</p>
+    ${DAY.map((d, i) => `<div class="wkrow"><span class="d">${d}</span><span class="grow chipwrap">
+      ${t.week[i].map((n) => `<button class="tchip ${isHard(t, n) ? 'hard' : ''}" data-act="tpl-remove" data-day="${i}" data-name="${esc(n)}" aria-label="Remove ${esc(n)} from ${d}">${esc(n)} &times;</button>`).join('')}</span>
+      <select data-act="tpl-add" data-day="${i}" aria-label="Add to ${d}"><option value="">+</option>${t.library.map((x) => `<option value="${esc(x.name)}">${esc(x.name)}</option>`).join('')}</select></div>`).join('')}
+    <h3>Session list</h3>
+    ${t.library.map((x) => `<div class="row-between lib"><span>${esc(x.name)}</span>
+      <label class="toggle small"><input type="checkbox" data-act="lib-hard" data-name="${esc(x.name)}" ${x.hard ? 'checked' : ''}> Hard on legs</label>
+      <button class="link" data-act="lib-del" data-name="${esc(x.name)}">Delete</button></div>`).join('')}
+    <form id="lib-add" class="row" novalidate>
+      <input name="name" placeholder="New session, e.g. Mobility" aria-label="New session name" maxlength="40">
+      <button class="btn" type="submit">Add</button>
+    </form></section>`;
 }
 
 function openLog(id, extra = false) {
@@ -477,7 +555,7 @@ function renderSettings() {
         <p class="hint">Predicted from your fitness: ${fmtTime(predict(p.vdot, DIST[p.goal]))}. Race pace sessions use your goal if you set one.</p>
         <fieldset><legend>Run days</legend>${dayChips('runDays', p.runDays)}</fieldset>
         <label class="field">Long run day<select name="longRunDay">${DAY.map((d, i) => `<option value="${i}" ${p.longRunDay === i ? 'selected' : ''}>${d}</option>`).join('')}</select></label>
-        <fieldset><legend>Other hard training days</legend>${dayChips('otherDays', p.otherDays)}</fieldset>
+        <p class="hint">Hard training days come from your weekly gym and training below.</p>
         <label class="toggle"><input type="checkbox" name="timeTrials" ${p.timeTrials ? 'checked' : ''}> 5K time trials in recovery weeks</label>
         <p class="error" id="sched-error" role="alert"></p>
         <button class="btn primary wide" type="submit">Save and rebuild from next Monday</button>
@@ -485,6 +563,8 @@ function renderSettings() {
       <button class="btn wide" data-act="rebuild">Rebuild from my recent running</button>
       <button class="btn ghost wide" data-act="new-plan">Start a new plan</button>
     </section>
+
+    ${trainingSettings()}
 
     <section class="card"><h2>Auto sync (free)</h2>
       <p class="muted small">Garmin watch &rarr; Garmin Connect &rarr; intervals.icu (free) &rarr; this app. Strava isn't used: its API now needs a paid subscription.</p>
@@ -531,8 +611,16 @@ function renderSettings() {
     if (!runDays.includes(longRunDay)) return err('Long run day must be a run day.');
     if (f.goalTime.value.trim() && !goalTime) return err('Goal time should look like 1:45:00.');
     if (daysBetween(today(), f.raceDate.value) < 21) return err('Race date must be at least 3 weeks away.');
-    S.profile = { ...S.profile, raceDate: f.raceDate.value, goalTime, runDays, longRunDay, otherDays: checked(f, 'otherDays'), timeTrials: f.timeTrials.checked };
+    S.profile = { ...S.profile, raceDate: f.raceDate.value, goalTime, runDays, longRunDay, otherDays: hardDays(T()), timeTrials: f.timeTrials.checked };
     doRebuild('Saved. Weeks from next Monday rebuilt.');
+  });
+  $('#lib-add').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const name = e.target.name.value.trim();
+    if (!name) return;
+    if (T().library.some((x) => x.name.toLowerCase() === name.toLowerCase())) return toast('That session already exists');
+    T().library.push({ name, hard: false });
+    persist(); render(); toast(`${name} added`);
   });
   $('#sync-form').addEventListener('submit', (e) => {
     e.preventDefault();
@@ -576,6 +664,8 @@ async function runSync(loud) {
 document.addEventListener('click', (e) => {
   const open = e.target.closest('[data-open]');
   if (open && !open.disabled) return openWorkout(open.dataset.open);
+  const dayBtn = e.target.closest('[data-day]:not([data-act])');
+  if (dayBtn) return openDay(dayBtn.dataset.day);
   const tabBtn = e.target.closest('[data-tab]');
   if (tabBtn) { tab = tabBtn.dataset.tab; scrollToWeek = true; window.scrollTo(0, 0); render(); return; }
   if (e.target.closest('[data-close]')) return closeSheet();
@@ -611,6 +701,24 @@ document.addEventListener('click', (e) => {
     case 'backup': exportFile(S); S.lastBackup = today(); break;
     case 'sync': return runSync(true);
     case 'disconnect': S.sync.apiKey = ''; break;
+    case 'gym-done': {
+      const k = doneKey(a.dataset.date, a.dataset.name);
+      if (T().done[k]) delete T().done[k]; else T().done[k] = true;
+      persist(); render(); return openDay(a.dataset.date);
+    }
+    case 'gym-remove': removeSession(T(), a.dataset.date, a.dataset.name); persist(); render(); return openDay(a.dataset.date);
+    case 'tpl-remove': {
+      const list = T().week[Number(a.dataset.day)];
+      list.splice(list.indexOf(a.dataset.name), 1);
+      return afterTemplateChange();
+    }
+    case 'lib-del': {
+      const n = a.dataset.name;
+      if (!confirm(`Delete ${n} from your usual week and session list?`)) return;
+      T().library = T().library.filter((x) => x.name !== n);
+      T().week = T().week.map((d) => d.filter((x) => x !== n));
+      return afterTemplateChange();
+    }
     case 'del-extra': S.extras = S.extras.filter((x) => x.id !== id); break;
     case 'new-plan': closeSheet(); return renderSetup({ ...S.profile, raceDate: '', goalTime: S.profile.goalTime ? fmtTime(S.profile.goalTime) : '', raceTime: S.profile.raceTime || '' });
     case 'reset':
@@ -624,6 +732,15 @@ document.addEventListener('click', (e) => {
 });
 
 document.addEventListener('change', (e) => {
+  const g = e.target.closest('[data-act^="gym-"], [data-act^="tpl-"], [data-act="lib-hard"]');
+  if (g && g.tagName === 'SELECT' && !g.value) return;
+  if (g) {
+    const act = g.dataset.act;
+    if (act === 'gym-add') { addSession(T(), g.dataset.date, g.value); persist(); render(); return openDay(g.dataset.date); }
+    if (act === 'gym-move') { moveSession(T(), g.dataset.date, g.value, g.dataset.name); persist(); render(); toast(`${g.dataset.name} moved`); return openDay(g.value); }
+    if (act === 'tpl-add') { T().week[Number(g.dataset.day)].push(g.value); return afterTemplateChange(); }
+    if (act === 'lib-hard') { T().library.find((x) => x.name === g.dataset.name).hard = g.checked; return afterTemplateChange(); }
+  }
   const sel = e.target.closest('select[data-act="move"]');
   if (!sel || !sel.value) return;
   const w = findWorkout(sel.dataset.id);
@@ -647,6 +764,7 @@ function render() {
   ({ today: renderToday, plan: renderPlan, progress: renderProgress, settings: renderSettings })[tab]();
 }
 
+if (S.profile) ensureTraining(S);
 render();
 if (S.sync.apiKey && S.sync.lastSync !== today()) runSync(false);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { render(); if (S.sync.apiKey) runSync(false); } });
