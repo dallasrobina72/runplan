@@ -45,14 +45,26 @@ export function volumeCheck(plan, logs, extras, today) {
 }
 
 // Rebuild every week from next Monday, starting from what you really ran. Keeps the race date.
-export function rebuild(profile, plan, logs, extras, today) {
-  const next = addDays(mondayOf(today), 7);
+// Rebuild the plan from what you really ran. Keeps the race date and everything before the rebuild point.
+// fromToday: also replans the rest of this week, keeping days already gone and any run you've logged.
+export function rebuild(profile, plan, logs, extras, today, fromToday = false) {
+  const thisMonday = mondayOf(today);
+  const next = fromToday ? thisMonday : addDays(thisMonday, 7);
   const kept = plan.weeks.filter((w) => w.start < next);
   const vol = recentVolume(plan, logs, extras, today);
   const p = { ...profile };
   if (vol && vol.km > 0) p.weeklyKm = vol.km;
   if (vol && vol.longest > 0) p.longestKm = vol.longest;
-  const fresh = buildPlan(p, next, kept.length);
+  const fresh = buildPlan(p, fromToday ? today : next, kept.length);
+  if (fromToday) {
+    const cur = plan.weeks.find((w) => w.start === thisMonday);
+    const wk = fresh.weeks[0];
+    if (cur && wk) {
+      const keep = cur.workouts.filter((w) => w.date < today || logs[w.id]);
+      wk.workouts = [...keep, ...wk.workouts.filter((x) => !keep.some((k) => k.date === x.date))].sort((a, b) => a.date.localeCompare(b.date));
+      wk.km = Math.round(wk.workouts.reduce((sum, w) => sum + w.km, 0) * 2) / 2;
+    }
+  }
   return { ...plan, weeks: [...kept, ...fresh.weeks], rebuilt: today };
 }
 

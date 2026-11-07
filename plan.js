@@ -192,7 +192,14 @@ export function buildPlan(profile, startDate, weekOffset = 0) {
   const phaseIdx = (i) => phases.slice(0, i).filter((x) => x === phases[i]).length;
   const nonTaper = n - g.taper;
   // Long run grows so it peaks at the end of the peak phase.
-  const longStep = Math.min(g.longStep, Math.max(0.5, (g.peakLong - long) / Math.max(1, nonTaper * 0.75)));
+  // Weeks that build (not recovery, not taper): the long run and weekly km grow on these.
+  const building = Array.from({ length: nonTaper }, (_, i) => i).filter((i) => i > 0 && !(i % 4 === 3 && i < nonTaper - 1)).length || 1;
+  // Grow fast enough to reach the longest run (it can be 55% of a peak week), but never more than 12% a week.
+  // Lower-mileage runners (under 20 km a week) do fewer, shorter midweek runs, so the long run is a bigger share.
+  const longShare = (phase) => (startKm < 20 ? 0.6 : phase === 'peak' ? 0.55 : 0.5);
+  const rate = Math.min(0.12, Math.max(0.08, Math.pow(g.peakLong / longShare('peak') / startKm, 1 / building) - 1));
+  // Reach the longest run about 3 build weeks before the taper, so it's repeated rather than done once.
+  const longStep = Math.min(2, Math.max(0.5, (g.peakLong - long) / Math.max(1, building - 3)));
 
   const weeks = [];
   let lastNormal = 0, lastLong = 0, prevLong = 0;
@@ -212,12 +219,14 @@ export function buildPlan(profile, startDate, weekOffset = 0) {
       km = level * 0.8;
       longKm = round(long * 0.75);
     } else {
-      if (i > 0) { level = Math.min(peakKm, level * 1.08); long = Math.min(g.peakLong, long + longStep); }
+      if (i > 0) { level = Math.min(peakKm, level * (1 + rate)); long = Math.min(g.peakLong, long + longStep); }
+      // The long run leads: the week grows to carry it.
+      level = Math.max(level, long / longShare(phase));
       km = level;
       longKm = round(long);
     }
-    // The long run is at most half the week (55% in the peak phase, so lower-mileage runners still reach their longest run).
-    longKm = Math.min(longKm, Math.max(6, round(km * (phase === 'peak' ? 0.55 : 0.5))));
+    // The long run's share of the week is capped (see longShare).
+    longKm = Math.min(longKm, Math.max(6, round(km * longShare(phase))));
     // And never more than 2 km longer than the last long run.
     if (prevLong) longKm = Math.min(longKm, prevLong + 2);
 
@@ -264,7 +273,7 @@ export function buildPlan(profile, startDate, weekOffset = 0) {
       hardDays.forEach((d, k) => add(d, fit(quality(hard[k], profile.goal, phase, t), perSession, zp)));
       const used = workouts.reduce((s, w) => s + w.km, 0);
       // Not enough km left for proper easy runs: run fewer days this week instead.
-      while (easyDays.length > 1 && (km - used) / easyDays.length < 3) easyDays = easyDays.slice(0, -1);
+      // Keep every run day you picked; only recovery weeks drop runs (below).
       const each = easyDays.length ? Math.min(12, Math.max(3, round((km - used) / easyDays.length))) : 0;
       easyDays.forEach((d, k) => add(d, k === 0 && phase !== 'taper' && !recovery
         ? { type: 'strides', steps: [run(each, 'easy'), { kind: 'note', text: '6 x 20 s strides at the end' }] }
@@ -274,19 +283,33 @@ export function buildPlan(profile, startDate, weekOffset = 0) {
     // Safety cap: a normal week is never more than 10% above the last normal week.
     const normal = !isRaceWeek && !recovery && phase !== 'taper' && !partWeek;
     const total = () => workouts.reduce((s, w) => s + w.km, 0);
-    if (normal && lastNormal && total() > lastNormal * 1.1) {
+    const cap = lastNormal * (1.02 + rate);
+    if (normal && lastNormal && total() > cap) {
+      // Trim in order of what matters least for race day: easy runs, then the second hard session, then the long run.
+      for (const e of workouts.filter((w) => w.type === 'easy' || w.type === 'strides')) {
+        const cut = Math.min(round(total() - cap), e.km - 3);
+        if (cut > 0) { e.steps = [{ ...e.steps[0], km: round(e.steps[0].km - cut) }, ...e.steps.slice(1)]; e.km = round(e.km - cut); }
+      }
+      const hardOnes = workouts.filter((w) => HARD.has(w.type));
+      if (total() > cap && hardOnes.length > 1) {
+        const h = hardOnes[1];
+        const easyKm = Math.max(3, round(h.km - (total() - cap)));
+        Object.assign(h, { type: 'easy', steps: [run(easyKm, 'easy')], km: easyKm });
+      }
       const lr = workouts.find((w) => w.type === 'long');
-      const cut = Math.min(round(total() - lastNormal * 1.1), lr.km - lastLong);
+      const cut = lr ? Math.min(round(total() - cap), lr.km - lastLong) : 0;
       if (cut > 0) {
         lr.steps = [{ ...lr.steps[0], km: round(lr.steps[0].km - cut) }, ...lr.steps.slice(1)];
         lr.km = round(stepsKm(lr.steps, zp));
       }
-      // Still too much: the second hard session becomes an easy run.
-      const hardOnes = workouts.filter((w) => HARD.has(w.type));
-      if (total() > lastNormal * 1.1 && hardOnes.length > 1) {
-        const h = hardOnes[1];
-        const easyKm = Math.max(3, round(h.km - (total() - lastNormal * 1.1)));
-        Object.assign(h, { type: 'easy', steps: [run(easyKm, 'easy')], km: easyKm });
+    }
+    // A recovery week is always lighter than the last normal week: shorten, then drop, easy runs.
+    if (recovery && lastNormal && total() > lastNormal * 0.9) {
+      for (const e of workouts.filter((w) => w.type === 'easy' || w.type === 'strides')) {
+        if (total() <= lastNormal * 0.9) break;
+        const cut = Math.min(round(total() - lastNormal * 0.9), e.km - 3);
+        if (cut > 0) { e.steps = [{ ...e.steps[0], km: round(e.steps[0].km - cut) }, ...e.steps.slice(1)]; e.km = round(e.km - cut); }
+        if (total() > lastNormal * 0.9) workouts.splice(workouts.indexOf(e), 1);
       }
     }
     if (normal) { lastNormal = total(); lastLong = workouts.find((w) => w.type === 'long')?.km ?? lastLong; }

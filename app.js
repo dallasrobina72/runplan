@@ -444,7 +444,7 @@ function afterTemplateChange() {
   if (hd.join() !== [...S.profile.otherDays].sort().join()) {
     const prev = copy(S.profile);
     S.profile.otherDays = hd;
-    return doRebuild('Runs rebuilt around your hard days', prev);
+    return doRebuild('Runs from next Monday rebuilt around your hard days', prev, 'monday');
   }
   persist(); render();
 }
@@ -556,12 +556,16 @@ function restorePlan(id) {
   persist(); render(); toast('Older plan restored');
 }
 
-function doRebuild(msg = 'Plan rebuilt from next Monday', prevProfile = S.profile) {
+let rebuildFrom = 'today'; // Settings choice: 'today' or 'monday'
+
+function doRebuild(msg, prevProfile = S.profile, from = rebuildFrom) {
   try {
     snapshot('Before rebuild', prevProfile);
+    const fromToday = from === 'today';
+    msg = msg || (fromToday ? 'Plan rebuilt from today' : 'Plan rebuilt from next Monday');
     const next = addDays(mondayOf(today()), 7);
     for (const w of S.plan.weeks) if (w.start >= next) for (const x of w.workouts) delete S.logs[x.id];
-    S.plan = rebuild(S.profile, S.plan, S.logs, S.extras, today());
+    S.plan = rebuild(S.profile, S.plan, S.logs, S.extras, today(), fromToday);
     persist();
     render();
     toast(msg);
@@ -713,7 +717,16 @@ function renderSettings() {
         <p class="hint">Hard training days come from your weekly gym and training below.</p>
         <label class="toggle"><input type="checkbox" name="timeTrials" ${p.timeTrials ? 'checked' : ''}> 5K time trials in recovery weeks</label>
         <p class="error" id="sched-error" role="alert"></p>
-        <button class="btn primary wide" type="submit">Save and rebuild from next Monday</button>
+        <div class="row">
+          <label class="field">Km per week now<input type="number" name="weeklyKm" min="0" max="200" inputmode="decimal" value="${p.weeklyKm}"></label>
+          <label class="field">Longest recent run (km)<input type="number" name="longestKm" min="0" max="50" inputmode="decimal" value="${p.longestKm}"></label>
+        </div>
+        <p class="hint">Used until you've logged two full weeks; after that the plan builds from what you actually ran.</p>
+        <fieldset><legend>Rebuild from</legend><div class="seg">
+          <label><input type="radio" name="rebuildFrom" value="today" ${rebuildFrom === 'today' ? 'checked' : ''}><span>Today</span></label>
+          <label><input type="radio" name="rebuildFrom" value="monday" ${rebuildFrom === 'monday' ? 'checked' : ''}><span>Next Monday</span></label></div>
+          <p class="hint">Today keeps days already gone and runs you've logged, and replans the rest of this week.</p></fieldset>
+        <button class="btn primary wide" type="submit">Save and rebuild</button>
       </form>
       <button class="btn wide" data-act="rebuild">Rebuild from my recent running</button>
       <button class="btn ghost wide" data-act="new-plan">Start a new plan</button>
@@ -777,8 +790,9 @@ function renderSettings() {
     if (daysBetween(today(), f.raceDate.value) < 21) return err('Race date must be at least 3 weeks away.');
     const prev = copy(S.profile);
     S.profile = { ...S.profile, raceDate: f.raceDate.value, goalTime, runDays, longRunDay, otherDays: hardDays(T()), timeTrials: f.timeTrials.checked,
-      peakLong, paceFrom: f.paceFrom ? f.paceFrom.value : S.profile.paceFrom };
-    doRebuild('Saved. Weeks from next Monday rebuilt.', prev);
+      peakLong, paceFrom: f.paceFrom ? f.paceFrom.value : S.profile.paceFrom,
+      weeklyKm: Number(f.weeklyKm.value) || 0, longestKm: Number(f.longestKm.value) || 0 };
+    doRebuild(null, prev);
   });
   $('#lib-add').addEventListener('submit', (e) => {
     e.preventDefault();
@@ -931,6 +945,13 @@ document.addEventListener('click', (e) => {
 });
 
 document.addEventListener('change', (e) => {
+  if (e.target.name === 'rebuildFrom') { rebuildFrom = e.target.value; return; }
+  // Race pace source applies straight away, no rebuild needed (paces are worked out when shown).
+  if (e.target.name === 'paceFrom' && S.profile) {
+    S.profile.paceFrom = e.target.value;
+    persist(); render();
+    return toast(e.target.value === 'fitness' ? 'Race pace now follows your fitness' : 'Race pace now uses your goal time');
+  }
   const g = e.target.closest('[data-act^="gym-"], [data-act^="tpl-"], [data-act="lib-hard"]');
   if (g && g.tagName === 'SELECT' && !g.value) return;
   if (g) {
