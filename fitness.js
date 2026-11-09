@@ -98,3 +98,36 @@ export function hrRange(hr, lo, hi) {
   const at = (f) => Math.round(hr.rest + f * (hr.max - hr.rest));
   return [at(lo), at(hi)];
 }
+
+// Five heart rate zones as shares of heart rate reserve (resting to max).
+export const ZONES = [
+  { name: 'Z1 Recovery', lo: 0, hi: 0.6 },
+  { name: 'Z2 Easy', lo: 0.6, hi: 0.72 },
+  { name: 'Z3 Steady', lo: 0.72, hi: 0.82 },
+  { name: 'Z4 Threshold', lo: 0.82, hi: 0.9 },
+  { name: 'Z5 Hard', lo: 0.9, hi: Infinity },
+];
+
+export function zoneBpm(hr) {
+  if (!hr.max) return null;
+  return ZONES.map((z) => ({ ...z, from: Math.round(hr.rest + z.lo * (hr.max - hr.rest)), to: z.hi === Infinity ? null : Math.round(hr.rest + z.hi * (hr.max - hr.rest)) }));
+}
+
+// Total seconds in each zone across runs. Runs without second-by-second data count all their time at their average.
+export function zoneTimes(runs, hr) {
+  const zones = zoneBpm(hr);
+  if (!zones) return null;
+  const sec = [0, 0, 0, 0, 0];
+  let estimated = 0, used = 0;
+  for (const r of runs) {
+    const hist = r.hrHist && Object.keys(r.hrHist).length ? r.hrHist : r.hr && r.sec ? { [Math.round(r.hr)]: r.sec } : null;
+    if (!hist) continue;
+    used++;
+    if (!(r.hrHist && Object.keys(r.hrHist).length)) estimated++;
+    for (const [bpm, s] of Object.entries(hist)) {
+      const share = (Number(bpm) - hr.rest) / (hr.max - hr.rest);
+      sec[ZONES.findIndex((z) => share < z.hi)] += s;
+    }
+  }
+  return { zones, sec, total: sec.reduce((a, b) => a + b, 0), runs: used, estimated };
+}

@@ -294,3 +294,13 @@ input[type="range"] { padding: 0; min-height: 36px; accent-color: var(--accent);
 .toggle input[name="walk"] { width: 22px; height: 22px; }
 
 .hrguide { color: var(--muted); font-size: 13px; margin-top: 2px; }
+
+/* Heart rate zones */
+.zones { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 10px; }
+.zrow { display: grid; grid-template-columns: 96px 1fr 64px; gap: 8px; align-items: center; }
+.zname, .ztime { display: flex; flex-direction: column; font-size: 14px; line-height: 1.2; }
+.ztime { text-align: right; }
+.zbar { height: 12px; background: var(--surface-2); border-radius: 6px; overflow: hidden; }
+.zbar span { display: block; height: 100%; border-radius: 6px; }
+.zbar .z1 { background: #6c8597; } .zbar .z2 { background: var(--c-easy); } .zbar .z3 { background: var(--c-long); }
+.zbar .z4 { background: var(--c-tempo); } .zbar .z5 { background: var(--c-intervals); }

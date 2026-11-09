@@ -3,11 +3,11 @@ import { buildPlan, zonePaces, TYPES, HARD, stepsKm, DEFAULT_PEAK_LONG } from '.
 import { weekOf, weekStats, volumeCheck, rebuild, paceCheck, vdotFromResult } from './adapt.js';
 import { vdotFromRace, predict, DIST, fmtPace, fmtTime, parseTime } from './vdot.js';
 import { addDays, weekday, mondayOf, daysBetween, today, fmtDate, fmtShort, DAY } from './dates.js';
-import { fetchRuns, applyRuns, syncWindow, fetchStreams, runWalk } from './sync.js';
+import { fetchRuns, applyRuns, syncWindow, fetchStreams, runWalk, hrHistogram } from './sync.js';
 import { weeklyBars, line, dots } from './charts.js';
 import { ensureTraining, sessionsOn, isHard, hardDays, addSession, removeSession, moveSession, applyHardDays, clashFor, swapOption } from './training.js';
 import { runList, filterRuns, records, compare, averages } from './analysis.js';
-import { heartRates, autoFitness, hrRange, garminTrend } from './fitness.js';
+import { heartRates, autoFitness, hrRange, garminTrend, zoneTimes } from './fitness.js';
 
 let S = load();
 let tab = 'today';
@@ -82,11 +82,13 @@ function fitnessNow() {
   migrateFitness();
   const p = S.profile;
   if (!p.autoFitness) return { used: Math.round((p.base.vdot + p.offset) * 10) / 10, auto: p.base.vdot, runVdot: null, trust: 0, runs: 0, base: p.base.vdot, offset: p.offset };
-  const vo2s = (S.sync.wellness || []).filter((d) => d.vo2).map((d) => ({ date: d.date, v: d.vo2 }));
+  const vo2s = [...(S.sync.wellness || []).filter((d) => d.vo2).map((d) => ({ date: d.date, v: d.vo2 })), ...(p.vo2Entries || [])]
+    .sort((a, b) => a.date.localeCompare(b.date));
   return autoFitness(p, runList(S.plan, S.logs, S.extras), HR(), today(), garminTrend(vo2s, p.base, today()));
 }
 
-const latestVo2 = () => [...(S.sync.wellness || [])].reverse().find((d) => d.vo2);
+const latestVo2 = () => [...(S.sync.wellness || []).filter((d) => d.vo2), ...(S.profile.vo2Entries || []).map((e) => ({ date: e.date, vo2: e.v }))]
+  .sort((a, b) => a.date.localeCompare(b.date)).at(-1);
 
 // Keep the score your paces use up to date. Logs a history point when it moves.
 function refreshFitness(source = 'Auto') {
@@ -165,7 +167,9 @@ function runStats(r) {
     ['Type', r.walk ? 'Walk (not counted in running stats)' : r.treadmill ? 'Treadmill run' : 'Outdoor run'],
     ['From', r.source === 'intervals' ? 'Garmin via intervals.icu' : r.source === 'old plan' ? 'An older plan' : 'Logged by hand'],
   ].filter(([, v]) => v != null);
-  return `<table class="table stats">${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</table>${r.note ? `<p class="muted">${esc(r.note)}</p>` : ''}`;
+  const z = r.walk ? null : zoneTimes([r], HR());
+  return `<table class="table stats">${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</table>${r.note ? `<p class="muted">${esc(r.note)}</p>` : ''}
+    ${z && z.total ? `<h3>Heart rate zones</h3>${zoneBars(z)}${z.estimated ? '<p class="muted small">Estimated from average heart rate until the next sync.</p>' : ''}` : ''}`;
 }
 
 function openRun(src, id) {
@@ -631,6 +635,28 @@ function doRebuild(msg, prevProfile = S.profile, from = rebuildFrom) {
   } catch (ex) { toast(ex.message); }
 }
 
+// Time in each heart rate zone, as bars.
+function zoneBars(z) {
+  const max = Math.max(...z.sec, 1);
+  return `<div class="zones">${z.zones.map((zone, i) => `<div class="zrow">
+    <span class="zname">${zone.name}<span class="muted small">${zone.to ? `${zone.from} to ${zone.to}` : `${zone.from}+`}</span></span>
+    <span class="zbar"><span class="z${i + 1}" style="width:${(100 * z.sec[i]) / max}%"></span></span>
+    <span class="ztime">${fmtTime(z.sec[i])}<span class="muted small">${z.total ? Math.round((100 * z.sec[i]) / z.total) : 0}%</span></span></div>`).join('')}</div>`;
+}
+
+function zonesHtml(runs, label) {
+  const z = zoneTimes(runs, HR());
+  if (!z) return `<section><h2>Heart rate zones</h2><p class="muted small">Add your age or max heart rate in Settings to see zones.</p></section>`;
+  if (!z.total) return `<section><h2>Heart rate zones</h2><p class="muted small">No runs with heart rate yet.</p></section>`;
+  const easy = Math.round((100 * (z.sec[0] + z.sec[1])) / z.total);
+  return `<section><h2>Heart rate zones</h2>
+    <p class="muted small">${esc(label)} · ${z.runs} run${z.runs === 1 ? '' : 's'}, ${fmtTime(z.total)} total. Uses the filters above.</p>
+    ${zoneBars(z)}
+    <p class="small"><b>${easy}%</b> in Z1 to Z2. <span class="muted">Aim for about 80% easy across a week: that builds the base for long runs. Hard sessions are meant to be in Z4 to Z5; easy runs shouldn't be.</span></p>
+    ${z.estimated ? `<p class="muted small">${z.estimated} run${z.estimated === 1 ? '' : 's'} without second-by-second data: all of its time is counted at its average heart rate.</p>` : ''}
+  </section>`;
+}
+
 // ---------- progress ----------
 let pf = { where: 'all', kind: 'all' }; // Progress filters
 
@@ -736,6 +762,8 @@ function renderProgress() {
       <p class="muted small">Heartbeats per km joins pace and heart rate: fewer beats to cover a km means you're getting fitter.</p>
     </section>
 
+    ${zonesHtml(runs, `${pf.where === 'all' ? 'All' : pf.where === 'outdoor' ? 'Outdoor' : 'Treadmill'} runs${pf.kind === 'easy' ? ', easy and long only' : ''}`)}
+
     <section><h2>Weekly km</h2>
       ${rows.length ? weeklyBars(rows) + '<p class="legend small"><span class="key planned"></span>Planned <span class="key done"></span>Done</p>' : '<p class="muted">Shows once your plan starts.</p>'}
     </section>
@@ -777,7 +805,7 @@ function renderSettings() {
       <table class="table stats">
         <tr><td>Last race, time trial or setup</td><td>${fit.base} <span class="muted small">${esc(p.base.source)}, ${fmtShort(p.base.date)}</span></td></tr>
         ${p.autoFitness ? `<tr><td>From your recent runs</td><td>${fit.runVdot ?? '-'} <span class="muted small">${fit.runs} run${fit.runs === 1 ? '' : 's'}, counts ${Math.round(fit.trust * 100)}%</span></td></tr>
-        <tr><td>From Garmin VO2 max trend</td><td>${fit.garmin ? `${fit.garmin.vdot} <span class="muted small">VO2 max ${fit.garmin.then} &rarr; ${fit.garmin.now}, counts 20%</span>` : `- <span class="muted small">${latestVo2() ? `VO2 max ${latestVo2().vo2}, needs a change to use` : 'not received yet'}</span>`}</td></tr>` : ''}
+        <tr><td>From Garmin VO2 max trend</td><td>${fit.garmin ? `${fit.garmin.vdot} <span class="muted small">VO2 max ${fit.garmin.then} &rarr; ${fit.garmin.now}, counts 20%</span>` : `- <span class="muted small">${latestVo2() ? `VO2 max ${latestVo2().vo2}, used once it changes` : 'not received from Garmin, enter it below'}</span>`}</td></tr>` : ''}
         <tr><td>Your adjustment</td><td>${p.offset > 0 ? '+' : ''}${p.offset}</td></tr>
         <tr><td><b>Used for paces</b></td><td><b>${p.vdot}</b></td></tr>
       </table>
@@ -797,6 +825,7 @@ function renderSettings() {
           <label class="field">Max HR<input type="number" name="maxHr" min="120" max="230" inputmode="numeric" value="${p.maxHr ?? ''}" placeholder="${hr.max ?? 'bpm'}"></label>
           <label class="field">Resting HR<input type="number" name="restHr" min="30" max="100" inputmode="numeric" value="${p.restHr ?? ''}" placeholder="${hr.rest}"></label>
         </div>
+        <label class="field">Garmin VO2 max <span class="muted small">(only if it doesn't sync; update it when Garmin changes it)</span><input type="number" name="vo2" min="25" max="90" step="1" inputmode="numeric" value="${p.vo2Entries?.at(-1)?.v ?? ''}"></label>
         <p class="hint">Using max ${hr.max ?? 'unknown'} (${{ set: 'you set it', recorded: 'highest recorded', age: 'estimated from age' }[hr.maxSource] || 'add your age'}) and resting ${hr.rest} (${{ set: 'you set it', garmin: 'from Garmin', default: 'a typical value' }[hr.restSource]}). Leave max blank unless you've seen a higher one in an all-out effort.</p>
         <button class="btn wide" type="submit">Save heart rate</button>
       </form>
@@ -879,6 +908,11 @@ function renderSettings() {
     S.profile.age = val(f.age, 10, 90);
     S.profile.maxHr = val(f.maxHr, 120, 230);
     S.profile.restHr = val(f.restHr, 30, 100);
+    const vo2 = val(f.vo2, 25, 90);
+    if (vo2 && vo2 !== S.profile.vo2Entries?.at(-1)?.v) {
+      const list = (S.profile.vo2Entries || []).filter((e) => e.date !== today());
+      S.profile.vo2Entries = [...list, { date: today(), v: vo2 }];
+    }
     refreshFitness();
     persist(); render(); toast('Heart rate saved');
   });
@@ -946,12 +980,18 @@ async function runSync(loud) {
     const runs = await fetchRuns(S.sync, from, to);
     const r = applyRuns(S, runs);
     // Max cadence and run/walk time need each run's second-by-second data: fetched once per run.
-    const needStreams = [...Object.values(S.logs), ...S.extras].filter((x) => x.extId && !x.streamsDone && (x.streamTries || 0) < 2).slice(0, 8);
+    // Runs synced before heart rate zones existed get fetched once more for their heart rate.
+    const needStreams = [...Object.values(S.logs), ...S.extras]
+      .filter((x) => x.extId && (!x.streamsDone || (x.hr && !x.hrTried)) && (x.streamTries || 0) < 3).slice(0, 8);
     for (const rec of needStreams) {
       try {
-        const st = runWalk(await fetchStreams(S.sync, rec.extId), rec.walk);
+        const data = await fetchStreams(S.sync, rec.extId);
+        const st = runWalk(data, rec.walk);
         if (st) Object.assign(rec, st);
+        const hist = hrHistogram(data);
+        if (hist) rec.hrHist = hist;
         rec.streamsDone = true;
+        rec.hrTried = true;
       } catch { rec.streamTries = (rec.streamTries || 0) + 1; }
     }
     try {

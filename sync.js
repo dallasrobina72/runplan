@@ -76,8 +76,8 @@ export const syncWindow = (today, lastSync) => [lastSync ? addDays(lastSync, -3)
 // an array of { type, data } and an object keyed by stream name are accepted.
 export async function fetchStreams({ apiKey }, extId) {
   const headers = { Authorization: 'Basic ' + btoa('API_KEY:' + apiKey) };
-  let res = await fetch(`https://intervals.icu/api/v1/activity/${encodeURIComponent(extId)}/streams?types=time,cadence`, { headers });
-  if (res.status === 404) res = await fetch(`https://intervals.icu/api/v1/activity/${encodeURIComponent(extId)}/streams.json?types=time,cadence`, { headers });
+  let res = await fetch(`https://intervals.icu/api/v1/activity/${encodeURIComponent(extId)}/streams?types=time,cadence,heartrate`, { headers });
+  if (res.status === 404) res = await fetch(`https://intervals.icu/api/v1/activity/${encodeURIComponent(extId)}/streams.json?types=time,cadence,heartrate`, { headers });
   if (!res.ok) throw new Error(`streams ${res.status}`);
   return parseStreams(await res.json());
 }
@@ -86,7 +86,21 @@ export function parseStreams(body) {
   const out = {};
   if (Array.isArray(body)) for (const st of body) { if (st && st.type) out[st.type] = st.data; }
   else if (body && typeof body === 'object') for (const [k, v] of Object.entries(body)) out[k] = Array.isArray(v) ? v : v?.data;
-  return { time: out.time || [], cadence: out.cadence || [] };
+  return { time: out.time || [], cadence: out.cadence || [], heartrate: out.heartrate || [] };
+}
+
+// Seconds spent at each heart rate (bpm -> seconds). Stored raw so zones can be redrawn if your max or resting HR changes.
+export function hrHistogram({ time, heartrate }) {
+  const n = Math.min(time.length, heartrate.length);
+  if (n < 10) return null;
+  const hist = {};
+  for (let i = 0; i < n; i++) {
+    const bpm = Math.round(heartrate[i]);
+    if (!(bpm > 40 && bpm < 230)) continue;
+    const dt = Math.min(10, Math.max(0, (time[i + 1] ?? time[i] + 1) - time[i]));
+    hist[bpm] = (hist[bpm] || 0) + dt;
+  }
+  return Object.keys(hist).length ? hist : null;
 }
 
 // Running vs walking time from cadence: 140+ steps a minute is running, 40 to 139 is walking.
