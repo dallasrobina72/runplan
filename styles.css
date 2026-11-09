@@ -292,3 +292,5 @@ input[type="range"] { padding: 0; min-height: 36px; accent-color: var(--accent);
 .stats td:first-child { color: var(--muted); }
 
 .toggle input[name="walk"] { width: 22px; height: 22px; }
+
+.hrguide { color: var(--muted); font-size: 13px; margin-top: 2px; }

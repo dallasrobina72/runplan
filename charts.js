@@ -44,7 +44,8 @@ export function line(points, { fmt = (v) => v.toFixed(1), lowerIsBetter = false,
     return `<line x1="${L}" x2="${W - R}" y1="${yy}" y2="${yy}" class="grid"/><text x="${L - 6}" y="${yy + 4}" text-anchor="end" class="tick">${esc(fmt(v))}</text>`;
   }).join('');
   const step = Math.ceil(points.length / 6);
-  const labels = points.map((p, i) => (i % step === 0 || i === points.length - 1)
+  // Every step-th date plus the last one, skipping any that would crowd the last.
+  const labels = points.map((p, i) => ((i % step === 0 && i <= points.length - 1 - step * 0.8) || i === points.length - 1)
     ? `<text x="${x(i)}" y="${H - 8}" text-anchor="${i === 0 ? 'start' : i === points.length - 1 ? 'end' : 'middle'}" class="tick">${esc(p.label)}</text>` : '').join('');
   const dots = points.map((p, i) => `<circle cx="${x(i)}" cy="${y(p.y)}" r="3" class="dot"><title>${esc(p.label)}: ${esc(fmt(p.y))}</title></circle>`).join('');
   return `<svg viewBox="0 0 ${W} ${H}" class="chart" role="img" aria-label="${esc(label)}">${ticks}<path d="${path}" class="line"/>${dots}${labels}</svg>`;
