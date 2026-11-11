@@ -96,7 +96,7 @@ function quality(kind, goal, phase, t) {
       : { type: 'pace', steps: [warm(), reps(4, { km: 1, zone: 'goal' }, { min: 2, zone: 'jog' }), cool()] };
   }
   if (kind === 'trial') {
-    return { type: 'trial', steps: [warm(2.5), run(5, 'race5k', 'Time trial, steady effort you can hold'), cool()] };
+    return { type: 'trial', steps: [warm(2), run(5, 'race5k', 'Time trial, steady effort you can hold'), cool(1)] };
   }
   throw new Error('Unknown session ' + kind);
 }
@@ -195,8 +195,8 @@ export function buildPlan(profile, startDate, weekOffset = 0) {
   // Weeks that build (not recovery, not taper): the long run and weekly km grow on these.
   const building = Array.from({ length: nonTaper }, (_, i) => i).filter((i) => i > 0 && !(i % 4 === 3 && i < nonTaper - 1)).length || 1;
   // Grow fast enough to reach the longest run (it can be 55% of a peak week), but never more than 12% a week.
-  // Lower-mileage runners (under 20 km a week) do fewer, shorter midweek runs, so the long run is a bigger share.
-  const longShare = (phase) => (startKm < 20 ? 0.6 : phase === 'peak' ? 0.55 : 0.5);
+  // The long run is at most half the week (55% at the peak), so midweek runs keep their share.
+  const longShare = (phase) => (phase === 'peak' ? 0.55 : 0.5);
   const rate = Math.min(0.12, Math.max(0.08, Math.pow(g.peakLong / longShare('peak') / startKm, 1 / building) - 1));
   // Reach the longest run about 3 build weeks before the taper, so it's repeated rather than done once.
   const longStep = Math.min(2, Math.max(0.5, (g.peakLong - long) / Math.max(1, building - 3)));
@@ -241,6 +241,8 @@ export function buildPlan(profile, startDate, weekOffset = 0) {
     }
     else if (phase === 'peak') hard = runDays.length >= 4 ? ['pace', i % 2 ? 'intervals' : 'tempo'] : ['pace'];
     else hard = ['sharpen'];
+    // Easy runs grow with the long run: about a third of it, between 3 and 8 km.
+    const easyFloor = Math.min(8, Math.max(3, round(longKm * 0.35)));
     // Under 25 km a week, one hard session is plenty.
     if (hard.length === 2 && km < 25) hard = [hard[0]];
 
@@ -268,13 +270,13 @@ export function buildPlan(profile, startDate, weekOffset = 0) {
       add(longDay, longRun(longKm, phase, profile.goal, i));
       const hardDays = chooseHardDays(runDays, longDay, other, hard.length).sort((a, b) => a - b);
       let easyDays = runDays.filter((d) => d !== longDay && !hardDays.includes(d));
-      // Hard sessions shrink to fit the week, leaving at least 3 km for each easy run.
-      const perSession = (km - longKm - easyDays.length * 3) / Math.max(1, hardDays.length);
+      // Hard sessions shrink to fit the week, leaving room for proper easy runs.
+      const perSession = (km - longKm - easyDays.length * easyFloor) / Math.max(1, hardDays.length);
       hardDays.forEach((d, k) => add(d, fit(quality(hard[k], profile.goal, phase, t), perSession, zp)));
       const used = workouts.reduce((s, w) => s + w.km, 0);
       // Not enough km left for proper easy runs: run fewer days this week instead.
       // Keep every run day you picked; only recovery weeks drop runs (below).
-      const each = easyDays.length ? Math.min(12, Math.max(3, round((km - used) / easyDays.length))) : 0;
+      const each = easyDays.length ? Math.min(12, Math.max(easyFloor, round((km - used) / easyDays.length))) : 0;
       easyDays.forEach((d, k) => add(d, k === 0 && phase !== 'taper' && !recovery
         ? { type: 'strides', steps: [run(each, 'easy'), { kind: 'note', text: '6 x 20 s strides at the end' }] }
         : { type: 'easy', steps: [run(each, 'easy')] }));
@@ -284,33 +286,36 @@ export function buildPlan(profile, startDate, weekOffset = 0) {
     const normal = !isRaceWeek && !recovery && phase !== 'taper' && !partWeek;
     const total = () => workouts.reduce((s, w) => s + w.km, 0);
     const cap = lastNormal * (1.02 + rate);
+    const shorten = (w, toKm) => {
+      const cut = Math.min(round(total() - cap), w.km - toKm);
+      if (cut <= 0) return;
+      w.steps = [{ ...w.steps[0], km: round(w.steps[0].km - cut) }, ...w.steps.slice(1)];
+      w.km = round(stepsKm(w.steps, zp));
+    };
+    const easies = () => workouts.filter((w) => w.type === 'easy' || w.type === 'strides');
     if (normal && lastNormal && total() > cap) {
-      // Trim in order of what matters least for race day: easy runs, then the second hard session, then the long run.
-      for (const e of workouts.filter((w) => w.type === 'easy' || w.type === 'strides')) {
-        const cut = Math.min(round(total() - cap), e.km - 3);
-        if (cut > 0) { e.steps = [{ ...e.steps[0], km: round(e.steps[0].km - cut) }, ...e.steps.slice(1)]; e.km = round(e.km - cut); }
-      }
+      // Trim in order: easy runs down to their floor, the second hard session, the long run, then easy runs to 3 km.
+      easies().forEach((e) => shorten(e, easyFloor));
       const hardOnes = workouts.filter((w) => HARD.has(w.type));
       if (total() > cap && hardOnes.length > 1) {
         const h = hardOnes[1];
-        const easyKm = Math.max(3, round(h.km - (total() - cap)));
+        const easyKm = Math.max(easyFloor, round(h.km - (total() - cap)));
         Object.assign(h, { type: 'easy', steps: [run(easyKm, 'easy')], km: easyKm });
       }
       const lr = workouts.find((w) => w.type === 'long');
-      const cut = lr ? Math.min(round(total() - cap), lr.km - lastLong) : 0;
-      if (cut > 0) {
-        lr.steps = [{ ...lr.steps[0], km: round(lr.steps[0].km - cut) }, ...lr.steps.slice(1)];
-        lr.km = round(stepsKm(lr.steps, zp));
-      }
+      if (lr && total() > cap) shorten(lr, lastLong);
+      if (total() > cap) easies().forEach((e) => shorten(e, 3));
     }
-    // A recovery week is always lighter than the last normal week: shorten, then drop, easy runs.
-    if (recovery && lastNormal && total() > lastNormal * 0.9) {
-      for (const e of workouts.filter((w) => w.type === 'easy' || w.type === 'strides')) {
-        if (total() <= lastNormal * 0.9) break;
-        const cut = Math.min(round(total() - lastNormal * 0.9), e.km - 3);
-        if (cut > 0) { e.steps = [{ ...e.steps[0], km: round(e.steps[0].km - cut) }, ...e.steps.slice(1)]; e.km = round(e.km - cut); }
-        if (total() > lastNormal * 0.9) workouts.splice(workouts.indexOf(e), 1);
-      }
+    // A recovery week is lighter than the last normal week but keeps every run: shorten the long run, then easy runs.
+    if (recovery && lastNormal && total() > lastNormal * 0.85) {
+      const target = lastNormal * 0.85;
+      const lr = workouts.find((w) => w.type === 'long');
+      const cutTo = (w, toKm) => {
+        const cut = Math.min(round(total() - target), w.km - toKm);
+        if (cut > 0) { w.steps = [{ ...w.steps[0], km: round(w.steps[0].km - cut) }, ...w.steps.slice(1)]; w.km = round(stepsKm(w.steps, zp)); }
+      };
+      if (lr) cutTo(lr, round(lastLong * (workouts.some((w) => w.type === 'trial') ? 0.5 : 0.6)));
+      easies().forEach((e) => cutTo(e, 3));
     }
     if (normal) { lastNormal = total(); lastLong = workouts.find((w) => w.type === 'long')?.km ?? lastLong; }
 

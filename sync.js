@@ -89,12 +89,17 @@ export function parseStreams(body) {
   return { time: out.time || [], cadence: out.cadence || [], heartrate: out.heartrate || [] };
 }
 
-// Seconds spent at each heart rate (bpm -> seconds). Stored raw so zones can be redrawn if your max or resting HR changes.
-export function hrHistogram({ time, heartrate }) {
+// Seconds spent at each heart rate while moving (bpm -> seconds). Standing still with the watch running is
+// left out, the same as moving time. Stored raw so zones can be redrawn if your max or resting HR changes.
+export function hrHistogram({ time, heartrate, cadence = [] }) {
   const n = Math.min(time.length, heartrate.length);
   if (n < 10) return null;
+  const nz = cadence.filter((c) => c > 0).sort((a, b) => a - b);
+  const k = nz.length && nz[Math.floor(nz.length / 2)] < 110 ? 2 : 1; // one leg -> both legs
+  const moving = (i) => !cadence.length || (cadence[i] || 0) * k >= 40;
   const hist = {};
   for (let i = 0; i < n; i++) {
+    if (!moving(i)) continue;
     const bpm = Math.round(heartrate[i]);
     if (!(bpm > 40 && bpm < 230)) continue;
     const dt = Math.min(10, Math.max(0, (time[i + 1] ?? time[i] + 1) - time[i]));

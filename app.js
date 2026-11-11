@@ -982,7 +982,7 @@ async function runSync(loud) {
     // Max cadence and run/walk time need each run's second-by-second data: fetched once per run.
     // Runs synced before heart rate zones existed get fetched once more for their heart rate.
     const needStreams = [...Object.values(S.logs), ...S.extras]
-      .filter((x) => x.extId && (!x.streamsDone || (x.hr && !x.hrTried)) && (x.streamTries || 0) < 3).slice(0, 8);
+      .filter((x) => x.extId && (!x.streamsDone || (x.hr && x.hrV !== 2)) && (x.streamTries || 0) < 4).slice(0, 8);
     for (const rec of needStreams) {
       try {
         const data = await fetchStreams(S.sync, rec.extId);
@@ -991,7 +991,7 @@ async function runSync(loud) {
         const hist = hrHistogram(data);
         if (hist) rec.hrHist = hist;
         rec.streamsDone = true;
-        rec.hrTried = true;
+        rec.hrV = 2; // version 2: moving time only
       } catch { rec.streamTries = (rec.streamTries || 0) + 1; }
     }
     try {
