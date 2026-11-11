@@ -899,7 +899,7 @@ function renderSettings() {
         <label class="btn">Restore<input type="file" accept="application/json,.json" id="restore" hidden></label></div>
       <button class="btn danger wide" data-act="reset">Delete everything</button>
     </section>
-    <p class="muted small center">Runplan · free and private · v1</p>`;
+    <p class="muted small center">Runplan · free and private · version 16</p>`;
 
   $('#hr-form').addEventListener('submit', (e) => {
     e.preventDefault();
