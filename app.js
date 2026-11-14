@@ -56,7 +56,7 @@ const kmh = (secPerKm) => (3600 / secPerKm).toFixed(1);
 function paceText(zone) {
   const p = zp();
   if (zone === 'easy') {
-    const hr = hrRange(HR(), 0.6, 0.72);
+    const hr = hrRange(HR(), 0.6, 0.7); // Zone 2
     return `${fmtPace(p.easyFast)} to ${fmtPace(p.easySlow)} /km <span class="muted">(${kmh(p.easySlow)} to ${kmh(p.easyFast)} km/h)</span>${hr ? `<div class="hrguide">Heart rate ${hr[0]} to ${hr[1]}. Higher? Slow down.</div>` : ''}`;
   }
   if (zone === 'hill') return 'hard effort (ignore pace on hills)';
@@ -899,7 +899,7 @@ function renderSettings() {
         <label class="btn">Restore<input type="file" accept="application/json,.json" id="restore" hidden></label></div>
       <button class="btn danger wide" data-act="reset">Delete everything</button>
     </section>
-    <p class="muted small center">Runplan · free and private · version 17</p>`;
+    <p class="muted small center">Runplan · free and private · version 19</p>`;
 
   $('#hr-form').addEventListener('submit', (e) => {
     e.preventDefault();

@@ -99,12 +99,12 @@ export function hrRange(hr, lo, hi) {
   return [at(lo), at(hi)];
 }
 
-// Five heart rate zones as shares of heart rate reserve (resting to max).
+// Five heart rate zones as shares of heart rate reserve (resting to max): the standard 60/70/80/90% split.
 export const ZONES = [
   { name: 'Z1 Recovery', lo: 0, hi: 0.6 },
-  { name: 'Z2 Easy', lo: 0.6, hi: 0.72 },
-  { name: 'Z3 Steady', lo: 0.72, hi: 0.82 },
-  { name: 'Z4 Threshold', lo: 0.82, hi: 0.9 },
+  { name: 'Z2 Easy', lo: 0.6, hi: 0.7 },
+  { name: 'Z3 Steady', lo: 0.7, hi: 0.8 },
+  { name: 'Z4 Threshold', lo: 0.8, hi: 0.9 },
   { name: 'Z5 Hard', lo: 0.9, hi: Infinity },
 ];
 

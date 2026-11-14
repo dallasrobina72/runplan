@@ -54,7 +54,8 @@ export function rebuild(profile, plan, logs, extras, today, fromToday = false) {
   const vol = recentVolume(plan, logs, extras, today);
   const p = { ...profile };
   if (vol && vol.km > 0) p.weeklyKm = vol.km;
-  if (vol && vol.longest > 0) p.longestKm = vol.longest;
+  // Your recent runs can raise the starting long run, but never drop it below the longest run you set in Settings.
+  if (vol && vol.longest > 0) p.longestKm = Math.max(vol.longest, profile.longestKm || 0);
   const fresh = buildPlan(p, fromToday ? today : next, kept.length);
   if (fromToday) {
     const cur = plan.weeks.find((w) => w.start === thisMonday);
