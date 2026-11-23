@@ -4,7 +4,7 @@ import { weekOf, weekStats, volumeCheck, rebuild, paceCheck, vdotFromResult } fr
 import { vdotFromRace, predict, DIST, fmtPace, fmtTime, parseTime } from './vdot.js';
 import { addDays, weekday, mondayOf, daysBetween, today, fmtDate, fmtShort, DAY } from './dates.js';
 import { fetchRuns, applyRuns, syncWindow, fetchStreams, runWalk, hrHistogram } from './sync.js';
-import { weeklyBars, line, dots } from './charts.js';
+import { weeklyBars, line, dots, wireCharts } from './charts.js';
 import { ensureTraining, sessionsOn, isHard, hardDays, addSession, removeSession, moveSession, applyHardDays, clashFor, swapOption } from './training.js';
 import { runList, filterRuns, records, compare, averages } from './analysis.js';
 import { heartRates, autoFitness, hrRange, garminTrend, zoneTimes } from './fitness.js';
@@ -663,17 +663,26 @@ let pf = { where: 'all', kind: 'all' }; // Progress filters
 function renderProgress() {
   const t = today();
   const weeks = S.plan.weeks.filter((w) => w.start <= t);
-  const rows = weeks.map((w) => ({ label: String(w.n), planned: w.km, done: weekStats(w, S.logs, S.extras).done, current: w === weekOf(S.plan, t) }));
+  const rows = weeks.map((w) => ({ label: String(w.n), start: w.start, planned: w.km, done: weekStats(w, S.logs, S.extras).done, current: w === weekOf(S.plan, t) }));
   const all = runList(S.plan, S.logs, S.extras);
   const totalKm = Math.round(all.reduce((sum, r) => sum + (r.km || 0), 0) * 10) / 10;
   const rec = records(all);
   const runs = filterRuns(all, pf);
   const timed = runs.filter((r) => r.sec && r.km >= 0.5);
   const cls = (r) => (HARD.has(r.type) ? 'hard' : '');
-  const pacePts = timed.map((r) => ({ label: fmtShort(r.date), y: r.sec / r.km, cls: cls(r) }));
-  const hrPts = timed.filter((r) => r.hr).map((r) => ({ label: fmtShort(r.date), y: r.hr, cls: cls(r) }));
-  const cadPts = timed.filter((r) => r.cad).map((r) => ({ label: fmtShort(r.date), y: r.cad, cls: cls(r) }));
-  const beatPts = timed.filter((r) => r.hr).map((r) => ({ label: fmtShort(r.date), y: (r.hr * r.sec) / 60 / r.km, cls: cls(r) }));
+  // Each point carries its date and what the run was, for the text under the chart when it's picked.
+  const pt = (r, y) => ({ label: fmtShort(r.date), date: r.date, y, cls: cls(r),
+    note: `${TYPES[r.type]?.name || 'Extra run'}, ${Math.round(r.km * 100) / 100} km${r.treadmill ? ', treadmill' : ''}` });
+  const pacePts = timed.map((r) => pt(r, r.sec / r.km));
+  const hrPts = timed.filter((r) => r.hr).map((r) => pt(r, r.hr));
+  const cadPts = timed.filter((r) => r.cad).map((r) => pt(r, r.cad));
+  const beatPts = timed.filter((r) => r.hr).map((r) => pt(r, (r.hr * r.sec) / 60 / r.km));
+  // Fitness history: one point per day (where the score ended that day), so a busy day doesn't crowd the chart.
+  const fitDays = [];
+  for (const h of S.vdotHistory) {
+    if (fitDays.at(-1)?.date === h.date) fitDays[fitDays.length - 1] = h;
+    else fitDays.push(h);
+  }
   const avg = averages(runs);
   const cmp = compare(runs, t);
   const seg = (key, opts) => `<div class="seg mini">${opts.map(([v, label]) =>
@@ -712,7 +721,7 @@ function renderProgress() {
           `<tr><td>${n}</td><td>${fmtTime(predict(S.profile.vdot, m))}</td><td class="muted small">${fmtPace(predict(S.profile.vdot, m) / (m / 1000))} /km</td></tr>`).join('')}
       </table>
       <p class="muted small">From your fitness score (VDOT ${S.profile.vdot}). ${S.profile.autoFitness ? 'Updates automatically from your runs, and resets with each time trial or race.' : 'Updates after each time trial or race.'}</p>
-      ${line(S.vdotHistory.map((h) => ({ label: fmtShort(h.date), y: h.vdot })), { label: 'VDOT over time' })}
+      ${line(fitDays.map((h) => ({ label: fmtShort(h.date), date: h.date, y: h.vdot, note: h.source === 'Auto' ? 'from your runs' : h.source })), { prefix: 'VDOT ', label: 'VDOT over time' })}
     </section>
 
     ${(() => {
@@ -727,9 +736,9 @@ function renderProgress() {
           <div class="tile"><span class="big">${hr.max ?? '-'}</span><span class="muted small">max HR used</span></div>
         </div>
         <h3>Resting heart rate</h3>
-        ${line(rhr.map((d) => ({ label: fmtShort(d.date), y: d.rhr })), { fmt: (v) => String(Math.round(v)), lowerIsBetter: true, label: 'Resting heart rate' }) || '<p class="muted small">Needs 2 days of data.</p>'}
+        ${line(rhr.map((d) => ({ label: fmtShort(d.date), date: d.date, y: d.rhr })), { fmt: (v) => String(Math.round(v)), unit: ' bpm', lowerIsBetter: true, label: 'Resting heart rate' }) || '<p class="muted small">Needs 2 days of data.</p>'}
         <p class="muted small">Lower is fitter and better recovered (higher on the chart). A jump of 5+ bpm can mean tiredness or illness coming: take an easy day.</p>
-        ${vo2.length >= 2 ? `<h3>Garmin VO2 max</h3>${line(vo2.map((d) => ({ label: fmtShort(d.date), y: d.vo2 })), { label: 'Garmin VO2 max' })}` : ''}
+        ${vo2.length >= 2 ? `<h3>Garmin VO2 max</h3>${line(vo2.map((d) => ({ label: fmtShort(d.date), date: d.date, y: d.vo2 })), { prefix: 'VO2 max ', label: 'Garmin VO2 max' })}` : ''}
       </section>`;
     })()}
 
@@ -743,14 +752,14 @@ function renderProgress() {
         <div class="tile"><span class="big">${avg.cad ? Math.round(avg.cad) : '-'}</span><span class="muted small">avg cadence (spm)</span></div>
       </div>
       <h3>Average pace per run</h3>
-      ${dots(pacePts, { fmt: fmtPace, lowerIsBetter: true, label: 'Average pace per run' }) || '<p class="muted small">Needs 2 runs with a time.</p>'}
+      ${dots(pacePts, { fmt: fmtPace, unit: ' /km', lowerIsBetter: true, label: 'Average pace per run' }) || '<p class="muted small">Needs 2 runs with a time.</p>'}
       <h3>Average heart rate per run</h3>
-      ${dots(hrPts, { fmt: (v) => String(Math.round(v)), label: 'Average heart rate per run' }) || '<p class="muted small">Needs 2 runs with heart rate. Synced Garmin runs include it, or add it when you log.</p>'}
+      ${dots(hrPts, { fmt: (v) => String(Math.round(v)), unit: ' bpm', label: 'Average heart rate per run' }) || '<p class="muted small">Needs 2 runs with heart rate. Synced Garmin runs include it, or add it when you log.</p>'}
       <h3>Heartbeats per km per run</h3>
-      ${dots(beatPts, { fmt: (v) => String(Math.round(v)), lowerIsBetter: true, label: 'Heartbeats per km per run' }) || '<p class="muted small">Needs 2 runs with heart rate.</p>'}
+      ${dots(beatPts, { fmt: (v) => String(Math.round(v)), unit: ' beats per km', lowerIsBetter: true, label: 'Heartbeats per km per run' }) || '<p class="muted small">Needs 2 runs with heart rate.</p>'}
       <p class="muted small">Your clearest fitness signal: fewer beats per km is higher on this chart. Pace and heart rate alone move with effort; this joins them.</p>
       <h3>Average cadence per run</h3>
-      ${dots(cadPts, { fmt: (v) => String(Math.round(v)), label: 'Average cadence per run' }) || '<p class="muted small">Needs 2 runs with cadence. Garmin runs include it.</p>'}
+      ${dots(cadPts, { fmt: (v) => String(Math.round(v)), unit: ' spm', label: 'Average cadence per run' }) || '<p class="muted small">Needs 2 runs with cadence. Garmin runs include it.</p>'}
       <p class="legend small"><span class="key done"></span>Easy, long and extra <span class="key hard"></span>Hard sessions · dashed line shows the trend. Faster is higher on the pace chart.</p>
       <h3>Last 4 weeks vs the 4 before</h3>
       <table class="table">
@@ -899,7 +908,7 @@ function renderSettings() {
         <label class="btn">Restore<input type="file" accept="application/json,.json" id="restore" hidden></label></div>
       <button class="btn danger wide" data-act="reset">Delete everything</button>
     </section>
-    <p class="muted small center">Runplan · free and private · version 19</p>`;
+    <p class="muted small center">Runplan · free and private · version 20</p>`;
 
   $('#hr-form').addEventListener('submit', (e) => {
     e.preventDefault();
@@ -1156,6 +1165,7 @@ function render() {
 }
 
 if (S.profile) ensureTraining(S);
+wireCharts();
 render();
 if (S.sync.apiKey && S.sync.lastSync !== today()) runSync(false);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { render(); if (S.sync.apiKey) runSync(false); } });

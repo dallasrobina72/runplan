@@ -217,6 +217,14 @@ input[type="range"] { padding: 0; min-height: 36px; accent-color: var(--accent);
 .chart .bar-done { fill: var(--accent); }
 .chart .line { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linejoin: round; }
 .chart .dot { fill: var(--accent); }
+/* Tap or drag a chart to pick a point. pan-y keeps up-and-down scrolling working. */
+.ichart svg { touch-action: pan-y; cursor: pointer; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+.chart .cursor { fill: var(--text); opacity: 0.12; pointer-events: none; }
+.chart .sel { fill: none; stroke: var(--text); stroke-width: 2; pointer-events: none; }
+.cinfo { display: flex; align-items: center; gap: 8px; margin: 4px 0 12px; }
+.cinfo .ctext { flex: 1; text-align: center; font-size: 14px; font-variant-numeric: tabular-nums; }
+.cstep { min-width: 44px; min-height: 44px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); font-size: 22px; line-height: 1; }
+.cstep:disabled { opacity: 0.3; }
 .key { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-left: 8px; }
 .key:first-child { margin-left: 0; }
 .key.planned { background: var(--surface-2); border: 1px solid var(--border); }
