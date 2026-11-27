@@ -16,7 +16,8 @@ const R = () => S().routing;
 const saved = () => (S().savedRoutes ||= []);
 const css = (name, fallback) => getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
 const pt = (p) => ({ lat: Math.round(p.lat * 1e5) / 1e5, lon: Math.round(p.lon * 1e5) / 1e5 });
-const netMsg = (ex) => (ex.message === 'Failed to fetch' || ex.message === 'Load failed' ? 'Could not connect. Check your signal and try again.' : ex.message);
+// On iPhone a refused key often shows up as a failed connection, so say both.
+const netMsg = (ex) => (ex.message === 'Failed to fetch' || ex.message === 'Load failed' ? 'No answer from OpenRouteService. If your signal is fine, the key may be wrong: tap Test key in Settings → Routes.' : ex.message);
 
 // ---------- map and location ----------
 function loadLeaflet() {
@@ -363,6 +364,7 @@ export function routeSettings() {
       <label class="field">OpenRouteService key<input name="key" type="password" autocomplete="off" value="${esc(R().key)}"></label>
       <button class="btn primary wide" type="submit">Save key</button>
     </form>
+    ${R().key ? '<button class="btn ghost wide" data-act="rt-test-key">Test key (opens in Safari)</button><p class="muted small">Shows OpenRouteService\'s own answer. Numbers starting {"type":"FeatureCollection" mean the key works.</p>' : ''}
     <h3>My hill</h3>
     <p class="small ${h ? '' : 'muted'}">${h ? `${h.m} m long, rises ${h.rise} m, ${h.gradient}% average` : 'Not set. Mark it and hill sessions will route you there.'}</p>
     <div class="row"><button class="btn" data-act="rt-hill-edit"${R().key ? '' : ' disabled'}>${h ? 'Move my hill' : 'Mark my hill'}</button>
@@ -426,6 +428,12 @@ export function routeAction(a) {
     case 'rt-gpx': saveGpx(w); break;
     case 'rt-save-run': saveRun(a.dataset.src, a.dataset.id); break;
     case 'rt-hill-edit': openHill(); break;
+    case 'rt-test-key': {
+      // A short path near your last start (or central Bristol), opened as a normal page so nothing hides the answer.
+      const p = R().last || { lat: 51.4545, lon: -2.5879 };
+      window.open(`https://api.openrouteservice.org/v2/directions/foot-walking?api_key=${encodeURIComponent(R().key)}&start=${p.lon},${p.lat}&end=${(p.lon + 0.003).toFixed(5)},${(p.lat + 0.002).toFixed(5)}`, '_blank');
+      break;
+    }
     case 'rt-hill-reset': H.bottom = H.top = H.result = null; drawHill({}); $('#rt-hill').innerHTML = hillControls(); break;
     case 'rt-hill-save': {
       const { bottom, top, m, rise, gradient, coords } = H.result;

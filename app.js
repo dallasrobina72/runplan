@@ -7,7 +7,8 @@ import { fetchRuns, applyRuns, syncWindow, fetchStreams, runWalk, hrHistogram } 
 import { weeklyBars, line, dots, wireCharts } from './charts.js';
 import { ensureTraining, sessionsOn, isHard, hardDays, addSession, removeSession, moveSession, applyHardDays, clashFor, swapOption } from './training.js';
 import { runList, filterRuns, records, compare, averages } from './analysis.js';
-import { heartRates, autoFitness, hrRange, garminTrend, zoneTimes } from './fitness.js';
+import { heartRates, autoFitness, hrRange, garminTrend, zoneTimes, zoneBpm } from './fitness.js';
+import { buildExport, CHOICES } from './export.js';
 import { initRoutes, routeSection, mountRouteSection, routeSettings, mountRouteSettings, routeAction, canSaveTrack, saveTrackButton } from './routeui.js';
 
 let S = load();
@@ -182,6 +183,7 @@ function openRun(src, id) {
     <div class="actions">
       ${r.walk ? '' : `<button class="btn" data-act="tread" data-src="extra" data-id="${r.id}">Count as ${r.treadmill ? 'outdoor' : 'treadmill'} run</button>`}
       <button class="btn" data-act="walk" data-id="${r.id}">${r.walk ? 'Count as a run' : 'This was a walk'}</button>
+      ${r.walk ? '' : `<button class="btn primary" data-act="ai-share" data-choice="id:${r.id}">Share this run for AI</button>`}
       ${canSaveTrack(r) ? saveTrackButton('extra', r.id) : ''}
       <button class="btn danger" data-act="del-extra" data-id="${r.id}">Delete this run</button>
     </div>`);
@@ -440,6 +442,7 @@ function openWorkout(id) {
     ${log?.status === 'skipped' ? `<div class="card done-box"><b>Skipped</b>${log.note ? ` · ${esc(log.note)}` : ''}</div>` : ''}
     <div class="actions">
       ${done ? `<button class="btn" data-act="log" data-id="${w.id}">Edit</button>
+           <button class="btn primary" data-act="ai-share" data-choice="id:${w.id}">Share this run for AI</button>
            <button class="btn ghost" data-act="tread" data-src="plan" data-id="${w.id}">Count as ${log.treadmill ? 'outdoor' : 'treadmill'} run</button>
            ${canSaveTrack(log) ? saveTrackButton('plan', w.id) : ''}
            <button class="btn ghost" data-act="unlog" data-id="${w.id}">Undo (remove this run)</button>`
@@ -711,6 +714,14 @@ function renderProgress() {
       </div>
     </section>
 
+    <section class="card"><h2>Share for AI analysis</h2>
+      <p class="muted small">A text file of your runs (plan, pace, heart rate, zones, cadence, effort, notes) to drop into ChatGPT or Claude. No screenshots needed.</p>
+      <div class="seg mini" role="group" aria-label="Which runs">${Object.entries(CHOICES).map(([k, c]) =>
+        `<button class="${aiChoice === k ? 'on' : ''}" data-act="ai-pick" data-choice="${k}" aria-pressed="${aiChoice === k}">${c.label}</button>`).join('')}</div>
+      <div class="row"><button class="btn primary" data-act="ai-share" data-choice="${aiChoice}">Share file</button>
+        <button class="btn" data-act="ai-share" data-choice="${aiChoice}" data-how="copy">Copy text</button></div>
+    </section>
+
     <section><h2>Personal records</h2>
       <table class="table">
         ${prRow('5K', rec.fiveK)}${prRow('10K', rec.tenK)}${prRow('Half marathon', rec.half)}${prRow('Marathon', rec.marathon)}
@@ -914,7 +925,7 @@ function renderSettings() {
         <label class="btn">Restore<input type="file" accept="application/json,.json" id="restore" hidden></label></div>
       <button class="btn danger wide" data-act="reset">Delete everything</button>
     </section>
-    <p class="muted small center">Runplan · free and private · version 21</p>`;
+    <p class="muted small center">Runplan · free and private · version 22</p>`;
 
   $('#hr-form').addEventListener('submit', (e) => {
     e.preventDefault();
@@ -1106,6 +1117,8 @@ document.addEventListener('click', (e) => {
       persist(); closeSheet(); render(); return toast('Runs swapped');
     }
     case 'pf': pf[a.dataset.key] = a.dataset.val; return render();
+    case 'ai-pick': aiChoice = a.dataset.choice; return render();
+    case 'ai-share': return shareForAi(a.dataset.choice, a.dataset.how);
     case 'run': return openRun(a.dataset.src, id);
     case 'walk': { const r = S.extras.find((x) => x.id === id); r.walk = !r.walk; persist(); render(); return openRun('extra', id); }
     case 'restore-plan':
@@ -1173,6 +1186,66 @@ function render() {
 }
 
 if (S.profile) ensureTraining(S);
+// ---------- share for AI ----------
+// Everything the export file needs to know about you, in plain text.
+const plain = (html) => { const d = document.createElement('div'); d.innerHTML = html.replace(/<(div|br|li|p)\b/g, ' <$1'); return d.textContent.replace(/\s+/g, ' ').trim(); };
+let aiChoice = 'last5';
+
+function exportContext() {
+  const p = S.profile, t = today(), z = zp();
+  const vo2 = (S.sync.wellness || []).filter((d) => d.vo2).at(-1)?.vo2 || p.vo2Entries?.at(-1)?.v || null;
+  const names = (days) => days.map((d) => DAY[d]).join(', ');
+  return {
+    goal: `${GOAL_NAME[p.goal]} on ${fmtDate(p.raceDate)} ${p.raceDate.slice(0, 4)}${p.goalTime ? `, goal time ${fmtTime(p.goalTime)}` : ''}`,
+    raceDate: p.raceDate,
+    planLine: `${p.runDays.length} runs a week (${names(p.runDays)}), long run on ${DAY[p.longRunDay]}. ${S.plan.weeks.length} weeks in the plan.`,
+    vdot: p.vdot,
+    predictions: [['5K', 5000], ['10K', 10000], ['Half marathon', 21097.5]].map(([name, m]) => ({ name, time: fmtTime(predict(p.vdot, m)) })),
+    paces: [['Easy', 'easy'], ['Threshold', 'threshold'], ['10K', 'tenK'], ['5K', 'fiveK'], ['Interval', 'interval'], ['Race pace', 'goal']]
+      .filter(([, k]) => z[k] || k === 'easy').map(([name, k]) => ({ name, text: k === 'easy' ? `${fmtPace(z.easyFast)}-${fmtPace(z.easySlow)} /km` : `${fmtPace(z[k])} /km` })),
+    hr: { ...HR(), maxSource: { set: 'set by me', recorded: 'highest recorded', age: 'estimated from age' }[HR().maxSource] || 'not set',
+      restSource: { set: 'set by me', garmin: 'Garmin 14-day average', default: 'default' }[HR().restSource] },
+    vo2,
+    zones: zoneBpm(HR()),
+    usualWeek: T().week.map((list, d) => (list.length ? `${DAY[d]} ${list.join(' + ')}` : '')).filter(Boolean).join('; ') || null,
+    zonesFor: (r) => zoneTimes([r], HR()),
+    zonesTotal: (runs) => zoneTimes(runs, HR()),
+    gymOn: (date) => sessionsOn(T(), date),
+    typeName: (type) => TYPES[type]?.name || 'Run',
+    weeks: S.plan.weeks.map((w) => ({ n: w.n, start: w.start, end: addDays(w.start, 6), planned: w.km, done: weekStats(w, S.logs, S.extras).done })),
+    next: allWorkouts().filter((w) => w.date > t && !S.logs[w.id]).slice(0, 3),
+  };
+}
+
+// Your runs, each with what was planned for it.
+function exportRuns() {
+  return runList(S.plan, S.logs, S.extras).map((r) => {
+    const w = r.type !== 'extra' && findWorkout(r.id);
+    return w ? { ...r, planned: { km: w.km, steps: w.steps.map((s) => plain(stepHtml(s))) } } : r;
+  });
+}
+
+async function shareForAi(choice, how) {
+  const { text, count, file } = buildExport(exportRuns(), choice, today(), exportContext());
+  if (!count) return toast('No runs to share yet');
+  if (how === 'copy') {
+    try { await navigator.clipboard.writeText(text); toast(`Copied ${count} run${count === 1 ? '' : 's'}. Paste into ChatGPT or Claude.`); }
+    catch { toast('Copying was blocked. Use Share file instead.'); }
+    return;
+  }
+  const f = new File([text], file, { type: 'text/plain' });
+  // iPhone: the share sheet, where you can pick the ChatGPT or Claude app. Elsewhere: a normal download.
+  if (navigator.canShare?.({ files: [f] })) {
+    try { await navigator.share({ files: [f], title: file }); } catch { /* closed the share sheet */ }
+    return;
+  }
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(f);
+  link.download = file;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 5000);
+}
+
 wireCharts();
 initRoutes({ state: () => S, persist, toast, openSheet, closeSheet, render, findWorkout, openWorkout, openRun, fmtDate, hillPace: () => zp().hill });
 render();
