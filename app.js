@@ -8,6 +8,7 @@ import { weeklyBars, line, dots, wireCharts } from './charts.js';
 import { ensureTraining, sessionsOn, isHard, hardDays, addSession, removeSession, moveSession, applyHardDays, clashFor, swapOption } from './training.js';
 import { runList, filterRuns, records, compare, averages } from './analysis.js';
 import { heartRates, autoFitness, hrRange, garminTrend, zoneTimes } from './fitness.js';
+import { initRoutes, routeSection, mountRouteSection, routeSettings, mountRouteSettings, routeAction, canSaveTrack, saveTrackButton } from './routeui.js';
 
 let S = load();
 let tab = 'today';
@@ -181,6 +182,7 @@ function openRun(src, id) {
     <div class="actions">
       ${r.walk ? '' : `<button class="btn" data-act="tread" data-src="extra" data-id="${r.id}">Count as ${r.treadmill ? 'outdoor' : 'treadmill'} run</button>`}
       <button class="btn" data-act="walk" data-id="${r.id}">${r.walk ? 'Count as a run' : 'This was a walk'}</button>
+      ${canSaveTrack(r) ? saveTrackButton('extra', r.id) : ''}
       <button class="btn danger" data-act="del-extra" data-id="${r.id}">Delete this run</button>
     </div>`);
 }
@@ -439,6 +441,7 @@ function openWorkout(id) {
     <div class="actions">
       ${done ? `<button class="btn" data-act="log" data-id="${w.id}">Edit</button>
            <button class="btn ghost" data-act="tread" data-src="plan" data-id="${w.id}">Count as ${log.treadmill ? 'outdoor' : 'treadmill'} run</button>
+           ${canSaveTrack(log) ? saveTrackButton('plan', w.id) : ''}
            <button class="btn ghost" data-act="unlog" data-id="${w.id}">Undo (remove this run)</button>`
         : log?.status === 'skipped' ? `<button class="btn ghost" data-act="unlog" data-id="${w.id}">Undo skip</button>`
         : `<button class="btn primary" data-act="log" data-id="${w.id}">Log this run</button>
@@ -450,8 +453,9 @@ function openWorkout(id) {
       `<option value="${x.date}">${x.d} ${fmtShort(x.date)}${wk.workouts.some((o) => o.date === x.date) ? ' (swap)' : ''}</option>`).join('')}</select></label>` : ''}
     ${HARD.has(w.type) && w.type !== 'race' ? `<p class="muted small">Hit the paces on the reps, not the whole run. Log how hard it felt so the app can tune your paces.</p>` : ''}
     ${clashNote(w)}
+    ${routeSection(w)}
     ${dayTraining(w.date)}
-  `);
+  `, mountRouteSection);
 }
 
 // ---------- gym and other training ----------
@@ -902,13 +906,15 @@ function renderSettings() {
       ${S.sync.apiKey ? '<button class="btn ghost wide" data-act="disconnect">Disconnect</button>' : ''}
     </section>
 
+    ${routeSettings()}
+
     <section class="card"><h2>Backup</h2>
       <p class="muted small">Everything lives on this phone. A backup file lets you restore it on another phone or after clearing your browser.</p>
       <div class="row"><button class="btn" data-act="backup">Save backup</button>
         <label class="btn">Restore<input type="file" accept="application/json,.json" id="restore" hidden></label></div>
       <button class="btn danger wide" data-act="reset">Delete everything</button>
     </section>
-    <p class="muted small center">Runplan · free and private · version 20</p>`;
+    <p class="muted small center">Runplan · free and private · version 21</p>`;
 
   $('#hr-form').addEventListener('submit', (e) => {
     e.preventDefault();
@@ -960,6 +966,7 @@ function renderSettings() {
     T().library.push({ name, hard: false });
     persist(); render(); toast(`${name} added`);
   });
+  mountRouteSettings(document);
   $('#sync-form').addEventListener('submit', (e) => {
     e.preventDefault();
     S.sync.athleteId = e.target.athleteId.value.trim() || '0';
@@ -1042,6 +1049,7 @@ document.addEventListener('click', (e) => {
   if (e.target.closest('[data-close]')) return closeSheet();
   const a = e.target.closest('[data-act]');
   if (!a || a.tagName === 'SELECT') return;
+  if (routeAction(a)) return;
   const id = a.dataset.id;
   const w = id && findWorkout(id);
   switch (a.dataset.act) {
@@ -1166,6 +1174,7 @@ function render() {
 
 if (S.profile) ensureTraining(S);
 wireCharts();
+initRoutes({ state: () => S, persist, toast, openSheet, closeSheet, render, findWorkout, openWorkout, openRun, fmtDate, hillPace: () => zp().hill });
 render();
 if (S.sync.apiKey && S.sync.lastSync !== today()) runSync(false);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { render(); if (S.sync.apiKey) runSync(false); } });

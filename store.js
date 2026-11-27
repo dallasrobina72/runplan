@@ -5,6 +5,7 @@ const blank = () => ({
   profile: null, plan: null, logs: {}, extras: [], vdotHistory: [],
   sync: { athleteId: '0', apiKey: '', lastSync: null, imported: [] },
   seen: {}, lastBackup: null, training: null, planHistory: [],
+  routes: {}, savedRoutes: [], routing: { key: '', hill: null, last: null }, // routes by date, your saved routes, route key and hill
 });
 
 export function load() {
@@ -21,8 +22,8 @@ export function save(state) {
 }
 
 export function exportFile(state) {
-  // The API key is left out so the backup file is safe to keep anywhere.
-  const copy = { ...state, sync: { ...state.sync, apiKey: '' } };
+  // The API keys are left out so the backup file is safe to keep anywhere.
+  const copy = { ...state, sync: { ...state.sync, apiKey: '' }, routing: { ...state.routing, key: '' } };
   const blob = new Blob([JSON.stringify(copy, null, 1)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -34,7 +35,8 @@ export function exportFile(state) {
 export async function importFile(file, current) {
   const data = JSON.parse(await file.text());
   if (!data || typeof data !== 'object' || !('plan' in data) || !('logs' in data)) throw new Error('Not a Runplan backup file');
-  return { ...blank(), ...data, sync: { ...blank().sync, ...data.sync, apiKey: current.sync.apiKey } };
+  return { ...blank(), ...data, sync: { ...blank().sync, ...data.sync, apiKey: current.sync.apiKey },
+    routing: { ...blank().routing, ...data.routing, key: current.routing?.key || '' } };
 }
 
 export const reset = () => localStorage.removeItem(KEY);

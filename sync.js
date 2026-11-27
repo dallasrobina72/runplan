@@ -82,6 +82,17 @@ export async function fetchStreams({ apiKey }, extId) {
   return parseStreams(await res.json());
 }
 
+// A run's GPS track and heights, for saving it as a route. Returns the raw latlng and altitude streams.
+export async function fetchTrack({ apiKey }, extId) {
+  const headers = { Authorization: 'Basic ' + btoa('API_KEY:' + apiKey) };
+  let res = await fetch(`https://intervals.icu/api/v1/activity/${encodeURIComponent(extId)}/streams?types=latlng,altitude`, { headers });
+  if (res.status === 404) res = await fetch(`https://intervals.icu/api/v1/activity/${encodeURIComponent(extId)}/streams.json?types=latlng,altitude`, { headers });
+  if (!res.ok) throw new Error(`intervals.icu said ${res.status}`);
+  const body = await res.json();
+  const list = Array.isArray(body) ? body : Object.entries(body || {}).map(([type, v]) => ({ type, ...(Array.isArray(v) ? { data: v } : v) }));
+  return { latlng: list.find((x) => x?.type === 'latlng') || null, altitude: list.find((x) => x?.type === 'altitude')?.data || [] };
+}
+
 export function parseStreams(body) {
   const out = {};
   if (Array.isArray(body)) for (const st of body) { if (st && st.type) out[st.type] = st.data; }

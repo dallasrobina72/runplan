@@ -312,3 +312,16 @@ input[type="range"] { padding: 0; min-height: 36px; accent-color: var(--accent);
 .zbar span { display: block; height: 100%; border-radius: 6px; }
 .zbar .z1 { background: #6c8597; } .zbar .z2 { background: var(--c-easy); } .zbar .z3 { background: var(--c-long); }
 .zbar .z4 { background: var(--c-tempo); } .zbar .z5 { background: var(--c-intervals); }
+
+/* Routes: maps, the planner and lists of saved routes. */
+.route { margin-top: 18px; }
+.route-map { height: 220px; border-radius: 14px; overflow: hidden; border: 1px solid var(--border); background: var(--surface-2); margin: 8px 0; z-index: 0; }
+.route-map.big { height: min(58vh, 460px); touch-action: none; }
+.route-result { margin: 8px 0; }
+.route-result p { margin: 0 0 8px; }
+.route-list { list-style: none; padding: 0; margin: 4px 0 10px; }
+.route-list li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.route-list li > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.btn.small { min-height: 40px; padding: 6px 14px; width: auto; flex: none; }
+.leaflet-container { font: inherit; background: var(--surface-2); }
+.leaflet-tooltip { font-size: 13px; }
