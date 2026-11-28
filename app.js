@@ -183,7 +183,7 @@ function openRun(src, id) {
     <div class="actions">
       ${r.walk ? '' : `<button class="btn" data-act="tread" data-src="extra" data-id="${r.id}">Count as ${r.treadmill ? 'outdoor' : 'treadmill'} run</button>`}
       <button class="btn" data-act="walk" data-id="${r.id}">${r.walk ? 'Count as a run' : 'This was a walk'}</button>
-      ${r.walk ? '' : `<button class="btn primary" data-act="ai-share" data-choice="id:${r.id}">Share this run for AI</button>`}
+      ${r.walk ? '' : `<button class="btn primary" data-act="ai-share" data-choice="id:${r.id}">Share this run</button>`}
       ${canSaveTrack(r) ? saveTrackButton('extra', r.id) : ''}
       <button class="btn danger" data-act="del-extra" data-id="${r.id}">Delete this run</button>
     </div>`);
@@ -442,7 +442,7 @@ function openWorkout(id) {
     ${log?.status === 'skipped' ? `<div class="card done-box"><b>Skipped</b>${log.note ? ` · ${esc(log.note)}` : ''}</div>` : ''}
     <div class="actions">
       ${done ? `<button class="btn" data-act="log" data-id="${w.id}">Edit</button>
-           <button class="btn primary" data-act="ai-share" data-choice="id:${w.id}">Share this run for AI</button>
+           <button class="btn primary" data-act="ai-share" data-choice="id:${w.id}">Share this run</button>
            <button class="btn ghost" data-act="tread" data-src="plan" data-id="${w.id}">Count as ${log.treadmill ? 'outdoor' : 'treadmill'} run</button>
            ${canSaveTrack(log) ? saveTrackButton('plan', w.id) : ''}
            <button class="btn ghost" data-act="unlog" data-id="${w.id}">Undo (remove this run)</button>`
@@ -714,8 +714,8 @@ function renderProgress() {
       </div>
     </section>
 
-    <section class="card"><h2>Share for AI analysis</h2>
-      <p class="muted small">A text file of your runs (plan, pace, heart rate, zones, cadence, effort, notes) to drop into ChatGPT or Claude. No screenshots needed.</p>
+    <section class="card"><h2>Share</h2>
+      <p class="muted small">A text file of your runs: plan, pace, heart rate, zones, cadence, effort and notes.</p>
       <div class="seg mini" role="group" aria-label="Which runs">${Object.entries(CHOICES).map(([k, c]) =>
         `<button class="${aiChoice === k ? 'on' : ''}" data-act="ai-pick" data-choice="${k}" aria-pressed="${aiChoice === k}">${c.label}</button>`).join('')}</div>
       <div class="row"><button class="btn primary" data-act="ai-share" data-choice="${aiChoice}">Share file</button>
@@ -925,7 +925,7 @@ function renderSettings() {
         <label class="btn">Restore<input type="file" accept="application/json,.json" id="restore" hidden></label></div>
       <button class="btn danger wide" data-act="reset">Delete everything</button>
     </section>
-    <p class="muted small center">Runplan · free and private · version 22</p>`;
+    <p class="muted small center">Runplan · free and private · version 23</p>`;
 
   $('#hr-form').addEventListener('submit', (e) => {
     e.preventDefault();
@@ -1186,7 +1186,7 @@ function render() {
 }
 
 if (S.profile) ensureTraining(S);
-// ---------- share for AI ----------
+// ---------- share ----------
 // Everything the export file needs to know about you, in plain text.
 const plain = (html) => { const d = document.createElement('div'); d.innerHTML = html.replace(/<(div|br|li|p)\b/g, ' <$1'); return d.textContent.replace(/\s+/g, ' ').trim(); };
 let aiChoice = 'last5';
@@ -1229,7 +1229,7 @@ async function shareForAi(choice, how) {
   const { text, count, file } = buildExport(exportRuns(), choice, today(), exportContext());
   if (!count) return toast('No runs to share yet');
   if (how === 'copy') {
-    try { await navigator.clipboard.writeText(text); toast(`Copied ${count} run${count === 1 ? '' : 's'}. Paste into ChatGPT or Claude.`); }
+    try { await navigator.clipboard.writeText(text); toast(`Copied ${count} run${count === 1 ? '' : 's'}`); }
     catch { toast('Copying was blocked. Use Share file instead.'); }
     return;
   }
